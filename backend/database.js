@@ -129,13 +129,42 @@ export function getInitialDB() {
     duplicate_findings: [],
     field_mappings: [],
     evidence: [],
-    governance_decisions: [],
+    governance_decisions: DEFAULT_GOVERNANCE_DECISIONS,
     experiment_runs: [],
     test_results: [],
     audit_logs: [],
     ground_truth_reviews: []
   };
 }
+
+export const DEFAULT_GOVERNANCE_DECISIONS = [
+  {
+    id: "gov-dec-101",
+    findingId: "pair-ts-stayeasy-hotel",
+    decisionType: "Consolidation",
+    canonicalApiId: "ts-hotel-bookings",
+    canonicalName: "TravelSphere Hotel Bookings API",
+    deprecatedApiId: "stayeasy-reserve-hotel",
+    deprecatedName: "StayEasy Reserve Room API",
+    reason: "Consolidation of overlapping hotel reservation logic. StayEasy duplicate route deprecated and redirected to TravelSphere canonical gateway route to eliminate redundant maintenance.",
+    approvedBy: "Alice Admin",
+    approvedAt: "2026-09-01T14:30:00.000Z",
+    migrationNotes: "HTTP 301 gateway rewrite rule deployed on /gateway/stayeasy-reserve -> /gateway/bookings."
+  },
+  {
+    id: "gov-dec-102",
+    findingId: "pair-ts-flyfast-flight",
+    decisionType: "Formal Governance",
+    canonicalApiId: "ts-flight-bookings",
+    canonicalName: "TravelSphere Flight Bookings API",
+    deprecatedApiId: "flyfast-book-flight",
+    deprecatedName: "FlyFast Flight Reserve API",
+    reason: "Contractual SLA Exemption: Partner airline requires direct IATA NDC XML format compliance for real-time ticket issuance. Both endpoints maintained with automated schema compatibility contract.",
+    approvedBy: "Alice Admin",
+    approvedAt: "2026-09-02T11:15:00.000Z",
+    migrationNotes: "SLA Agreement Ref #SLA-FLYFAST-2026. Bi-weekly schema drift verification scheduled."
+  }
+];
 
 export function readDB() {
   if (!fs.existsSync(DB_FILE)) {
@@ -155,7 +184,7 @@ export function readDB() {
       duplicate_findings: parsed.duplicate_findings || [],
       field_mappings: parsed.field_mappings || [],
       evidence: parsed.evidence || [],
-      governance_decisions: parsed.governance_decisions || [],
+      governance_decisions: (parsed.governance_decisions && parsed.governance_decisions.length > 0) ? parsed.governance_decisions : DEFAULT_GOVERNANCE_DECISIONS,
       experiment_runs: parsed.experiment_runs || [],
       test_results: parsed.test_results || [],
       audit_logs: parsed.audit_logs || [],

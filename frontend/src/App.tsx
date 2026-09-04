@@ -1103,6 +1103,105 @@ export default function App() {
             </div>
           )}
 
+          {/* GOVERNANCE DECISION LOGS */}
+          {activeTab === 'governance' && (
+            <div className="space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-xl font-bold">Formal Governance & Consolidation Decision Logs</h2>
+                  <p className="text-xs text-slate-400">Permanent, auditable registry of all API consolidation events and formal regulatory exemptions.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-400">Decisions Recorded:</span>
+                  <span className="px-3 py-1 bg-sky-950 text-sky-400 border border-sky-800 rounded-xl font-bold text-xs">{governanceDecisions.length}</span>
+                </div>
+              </div>
+
+              {/* Top Summary Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800 space-y-1">
+                  <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Consolidated Duplicates</p>
+                  <p className="text-2xl font-extrabold text-indigo-400">{governanceDecisions.filter(d => d.decisionType === 'Consolidation').length}</p>
+                  <p className="text-[11px] text-slate-400">Routes redirected to canonical service</p>
+                </div>
+                <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800 space-y-1">
+                  <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Formal SLA Exemptions</p>
+                  <p className="text-2xl font-extrabold text-emerald-400">{governanceDecisions.filter(d => d.decisionType === 'Formal Governance').length}</p>
+                  <p className="text-[11px] text-slate-400">Contractual dual-API compatibility active</p>
+                </div>
+                <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800 space-y-1">
+                  <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Active Policy Standard</p>
+                  <p className="text-2xl font-extrabold text-white">v2.4</p>
+                  <p className="text-[11px] text-slate-400">TravelSphere Enterprise Governance</p>
+                </div>
+              </div>
+
+              {/* Decisions List Table */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+                <div className="p-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
+                  <h3 className="font-bold text-xs uppercase text-slate-300 tracking-wider">Permanent Governance Audit Decisions</h3>
+                  <span className="text-[11px] text-slate-500">Immutable Ledger</span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="bg-slate-950/40 border-b border-slate-800 text-slate-400 font-semibold">
+                        <th className="p-4">Decision Type</th>
+                        <th className="p-4">Canonical Service</th>
+                        <th className="p-4">Target Duplicate / Governed</th>
+                        <th className="p-4">Decision Maker</th>
+                        <th className="p-4">Justification Reason</th>
+                        <th className="p-4">Gateway Migration Notes</th>
+                        <th className="p-4">Date</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60">
+                      {governanceDecisions.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="p-8 text-center text-slate-400 italic">
+                            No governance decisions recorded yet. Run duplicate analysis and execute a Consolidation or Formal Governance action.
+                          </td>
+                        </tr>
+                      ) : (
+                        governanceDecisions.map((d: any) => (
+                          <tr key={d.id} className="hover:bg-slate-800/40">
+                            <td className="p-4">
+                              <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider ${
+                                d.decisionType === 'Consolidation'
+                                  ? 'bg-indigo-950 text-indigo-300 border border-indigo-800'
+                                  : 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                              }`}>
+                                {d.decisionType}
+                              </span>
+                            </td>
+                            <td className="p-4 font-semibold text-slate-200">
+                              <div>
+                                <p>{d.canonicalName}</p>
+                                <span className="text-[10px] font-mono text-sky-400">{d.canonicalApiId}</span>
+                              </div>
+                            </td>
+                            <td className="p-4 text-slate-300">
+                              <div>
+                                <p>{d.deprecatedName || d.deprecatedApiId}</p>
+                                <span className={`text-[10px] font-mono ${d.decisionType === 'Consolidation' ? 'text-red-400' : 'text-emerald-400'}`}>
+                                  {d.decisionType === 'Consolidation' ? 'Deprecated & Redirected' : 'SLA Governed'}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="p-4 font-semibold text-slate-300">{d.approvedBy || 'Alice Admin'}</td>
+                            <td className="p-4 text-slate-400 max-w-xs">{d.reason}</td>
+                            <td className="p-4 font-mono text-[11px] text-slate-400 max-w-xs">{d.migrationNotes || 'None'}</td>
+                            <td className="p-4 text-slate-500 whitespace-nowrap">{new Date(d.approvedAt || Date.now()).toLocaleString()}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* REAL-TIME AUDIT LOGS */}
           {activeTab === 'audit-logs' && (
             <div className="space-y-6">
