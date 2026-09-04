@@ -795,6 +795,98 @@ export default function App() {
                 </div>
               )}
 
+              {/* API SPECIFICATION DETAILS MODAL */}
+              {selectedApi && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in">
+                  <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full max-h-[85vh] flex flex-col overflow-hidden shadow-2xl">
+                    {/* Header */}
+                    <div className="p-5 border-b border-slate-800 flex items-center justify-between bg-slate-950/60">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <h3 className="text-lg font-bold text-slate-100">{selectedApi.name}</h3>
+                          <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400">v{selectedApi.version}</span>
+                        </div>
+                        <p className="text-xs text-sky-400 font-mono">{selectedApi.gatewayBaseUrl}</p>
+                      </div>
+                      <button onClick={() => setSelectedApi(null)} className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 text-lg font-bold">✕</button>
+                    </div>
+
+                    {/* Content Scrollable */}
+                    <div className="p-6 overflow-y-auto space-y-6 text-xs">
+                      {/* Badges */}
+                      <div className="flex flex-wrap gap-2">
+                        <span className="px-2.5 py-1 rounded-lg bg-sky-950 text-sky-400 border border-sky-800 font-semibold">{selectedApi.category}</span>
+                        <span className="px-2.5 py-1 rounded-lg bg-slate-800 text-slate-300 font-semibold">{ORGANISATIONS.find(o => o.id === selectedApi.organisationId)?.name}</span>
+                        <span className={`px-2.5 py-1 rounded-lg font-semibold ${selectedApi.visibility === 'Public' ? 'bg-blue-950 text-blue-300 border border-blue-800' : 'bg-purple-950 text-purple-300 border border-purple-800'}`}>{selectedApi.visibility}</span>
+                        <span className={`px-2.5 py-1 rounded-lg font-semibold ${selectedApi.governanceStatus === 'Active' ? 'bg-green-950 text-green-300 border border-green-800' : selectedApi.governanceStatus === 'Deprecated' ? 'bg-red-950 text-red-300 border border-red-800' : 'bg-indigo-950 text-indigo-300 border border-indigo-800'}`}>{selectedApi.governanceStatus}</span>
+                      </div>
+
+                      {/* Description */}
+                      <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-1">
+                        <p className="font-bold text-slate-400 uppercase text-[10px]">Service Description</p>
+                        <p className="text-slate-300 leading-relaxed">{selectedApi.description || 'No description provided.'}</p>
+                      </div>
+
+                      {/* Input Parameters / Fields */}
+                      <div className="space-y-2">
+                        <p className="font-bold text-slate-300 text-xs uppercase tracking-wide">Input Parameters & Semantic Concepts ({selectedApi.inputFields?.length || 0})</p>
+                        <div className="bg-slate-950 rounded-xl border border-slate-800 overflow-hidden">
+                          <table className="w-full text-left text-xs">
+                            <thead>
+                              <tr className="border-b border-slate-800 text-slate-500 text-[11px]">
+                                <th className="p-3">Field Name</th>
+                                <th className="p-3">Type</th>
+                                <th className="p-3">Semantic Concept</th>
+                                <th className="p-3">Description</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-800/60">
+                              {selectedApi.inputFields?.map((f: any, idx: number) => (
+                                <tr key={idx} className="hover:bg-slate-900/50">
+                                  <td className="p-3 font-mono font-bold text-sky-400">{f.name}</td>
+                                  <td className="p-3 font-mono text-slate-400">{f.type || 'string'}</td>
+                                  <td className="p-3"><span className="px-2 py-0.5 rounded text-[10px] bg-indigo-950 text-indigo-300 border border-indigo-800 font-mono">{f.semanticConcept || f.semanticDefinition || 'concept'}</span></td>
+                                  <td className="p-3 text-slate-400">{f.semanticDefinition || 'Parameter field'}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      {/* Output Schema */}
+                      {selectedApi.outputFields && selectedApi.outputFields.length > 0 && (
+                        <div className="space-y-2">
+                          <p className="font-bold text-slate-300 text-xs uppercase tracking-wide">Response Output Fields ({selectedApi.outputFields.length})</p>
+                          <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex flex-wrap gap-2 font-mono text-[11px]">
+                            {selectedApi.outputFields.map((f: any, idx: number) => (
+                              <span key={idx} className="px-2.5 py-1 rounded bg-slate-900 border border-slate-800 text-slate-300">
+                                {f.name}: <span className="text-slate-500">{f.type || 'string'}</span>
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Raw OpenAPI Specification */}
+                      {selectedApi.specification && (
+                        <div className="space-y-2">
+                          <p className="font-bold text-slate-300 text-xs uppercase tracking-wide">OpenAPI 3.0 Specification Schema</p>
+                          <pre className="bg-slate-950 p-4 rounded-xl border border-slate-800 font-mono text-[11px] text-slate-300 overflow-x-auto max-h-48">
+                            {typeof selectedApi.specification === 'string' ? selectedApi.specification : JSON.stringify(selectedApi.specification, null, 2)}
+                          </pre>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Footer */}
+                    <div className="p-4 border-t border-slate-800 bg-slate-950/60 flex justify-end">
+                      <button onClick={() => setSelectedApi(null)} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl">Close</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
             </div>
           )}
 
