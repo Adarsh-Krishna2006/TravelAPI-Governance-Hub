@@ -1,0 +1,68 @@
+import express from 'express';
+import cors from 'cors';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import apiRouter from './routes.js';
+import { readDB, writeDB } from './database.js';
+import { runFullAnalysis } from './analyser.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+app.use(cors());
+app.use(express.json({ limit: '10mb' })); // Limit checks for malicious massive specs
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Attach API endpoints
+app.use('/api', apiRouter);
+
+// Serve Frontend Static files if build exists (production fallback)
+app.use(express.static(path.join(__dirname, '../frontend/dist')));
+
+// Fallback to React app router
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api')) {
+    return next();
+  }
+  res.sendFile(path.join(__dirname, '../frontend/dist/index.html'), (err) => {
+    if (err) {
+      res.status(200).send("TravelAPI Governance Hub Backend running. Frontend dist bundle not found; run development server using 'npm run dev'.");
+    }
+  });
+});
+
+// Safe Error-handler middleware (Edge Case: Adversarial Spec shouldn't crash app)
+app.use((err, req, res, next) => {
+  console.error("Express Error Interceptor:", err.message);
+  res.status(500).json({
+    error: "Internal Server Error",
+    details: err.message,
+    logs: ["Server caught uncaught exception safely. Exception logged."]
+  });
+});
+
+// Boot the server and run initial duplicate detection
+app.listen(PORT, () => {
+  console.log(`=========================================`);
+  console.log(` TravelAPI Governance Hub Booted Successfully!`);
+  console.log(` Access Backend APIs at http://localhost:${PORT}/api`);
+  console.log(`=========================================`);
+
+  try {
+    const db = readDB();
+    console.log(`DB Loaded: ${db.apis.length} APIs indexed, ${db.users.length} mock users.`);
+    
+    // Automatically trigger initial analysis on boot if none exists
+    if (!db.duplicate_findings || db.duplicate_findings.length === 0) {
+      console.log(`Running initial duplicate analysis scan...`);
+      const results = runFullAnalysis(db.apis, db.settings);
+      
+      db.duplicate_findings = results;
+      writeDB(db);
+      console.log(`Initial analysis complete: generated ${results.length} unique pair records.`);
+    }
+  } catch (e) {
+    console.error("Failed to run startup duplication scan", e);
+  }
+});
