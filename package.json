@@ -4,10 +4,13 @@
   "description": "TravelAPI Governance Hub - Catalogue & Duplicate Analyser",
   "private": true,
   "scripts": {
+    "postinstall": "npm install --prefix backend && npm install --prefix frontend",
     "install:all": "npm install && npm install --prefix backend && npm install --prefix frontend",
     "dev": "concurrently \"npm run dev --prefix backend\" \"npm run dev --prefix frontend\"",
+    "build": "npm run build --prefix frontend",
     "build:all": "npm run build --prefix frontend",
-    "start": "npm run start --prefix backend"
+    "start": "npm run start --prefix backend",
+    "test": "node backend/tests.js"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
