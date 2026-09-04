@@ -327,6 +327,38 @@ export default function App() {
     }
   };
 
+  // Computed Filtered Lists
+  const filteredApis = apis.filter(api => {
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase().trim();
+      const matchName = api.name?.toLowerCase().includes(q);
+      const matchRoute = api.gatewayBaseUrl?.toLowerCase().includes(q);
+      const matchDesc = api.description?.toLowerCase().includes(q);
+      if (!matchName && !matchRoute && !matchDesc) return false;
+    }
+    if (filterCategory && api.category !== filterCategory) return false;
+    if (filterOrg && api.organisationId !== filterOrg) return false;
+    if (filterGovernance && api.governanceStatus !== filterGovernance) return false;
+    if (filterVisibility && api.visibility !== filterVisibility) return false;
+    return true;
+  });
+
+  const filteredGatewayRoutes = gatewayRoutes.filter(r => {
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase().trim();
+      const matchRoute = r.gatewayRoute?.toLowerCase().includes(q);
+      const matchName = r.apiName?.toLowerCase().includes(q);
+      if (!matchRoute && !matchName) return false;
+    }
+    if (filterOrg) {
+      const orgObj = ORGANISATIONS.find(o => o.id === filterOrg);
+      if (orgObj && r.organisation && !r.organisation.toLowerCase().includes(orgObj.name.toLowerCase().replace(' partner', '').replace(' internal team', ''))) {
+        return false;
+      }
+    }
+    return true;
+  });
+
   return (
     <div className="flex h-screen bg-slate-950 text-slate-100 overflow-hidden font-sans">
       
@@ -638,8 +670,8 @@ export default function App() {
                 <div className="flex items-center gap-3">
                   <h2 className="text-xl font-bold">API Specifications Catalogue</h2>
                   <div className="flex bg-slate-900 p-1 rounded-xl border border-slate-800 text-xs">
-                    <button onClick={() => setCatalogueViewMode('apis')} className={`px-3 py-1 rounded-lg font-semibold ${catalogueViewMode === 'apis' ? 'bg-sky-600 text-white' : 'text-slate-400'}`}>APIs View ({apis.length})</button>
-                    <button onClick={() => setCatalogueViewMode('routes')} className={`px-3 py-1 rounded-lg font-semibold ${catalogueViewMode === 'routes' ? 'bg-sky-600 text-white' : 'text-slate-400'}`}>Gateway Routes View ({gatewayRoutes.length})</button>
+                    <button onClick={() => setCatalogueViewMode('apis')} className={`px-3 py-1 rounded-lg font-semibold ${catalogueViewMode === 'apis' ? 'bg-sky-600 text-white' : 'text-slate-400'}`}>APIs View ({filteredApis.length})</button>
+                    <button onClick={() => setCatalogueViewMode('routes')} className={`px-3 py-1 rounded-lg font-semibold ${catalogueViewMode === 'routes' ? 'bg-sky-600 text-white' : 'text-slate-400'}`}>Gateway Routes View ({filteredGatewayRoutes.length})</button>
                   </div>
                 </div>
                 {currentUser?.role !== 'Auditor' && (
@@ -648,27 +680,37 @@ export default function App() {
               </div>
 
               {/* Filter Bar */}
-              <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3 text-xs">
-                <input type="text" className="bg-slate-950 border border-slate-800 rounded-xl p-2 text-slate-200 focus:outline-none" placeholder="Search name or route..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
-                <select className="bg-slate-950 border border-slate-800 rounded-xl p-2 text-slate-200" value={filterCategory} onChange={e => setFilterCategory(e.target.value)}>
-                  <option value="">All Categories</option>
-                  {API_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-                </select>
-                <select className="bg-slate-950 border border-slate-800 rounded-xl p-2 text-slate-200" value={filterOrg} onChange={e => setFilterOrg(e.target.value)}>
-                  <option value="">All Organisations</option>
-                  {ORGANISATIONS.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
-                </select>
-                <select className="bg-slate-950 border border-slate-800 rounded-xl p-2 text-slate-200" value={filterGovernance} onChange={e => setFilterGovernance(e.target.value)}>
-                  <option value="">All Governance</option>
-                  <option value="Active">Active</option>
-                  <option value="Deprecated">Deprecated</option>
-                  <option value="Formally Governed">Formally Governed</option>
-                </select>
-                <select className="bg-slate-950 border border-slate-800 rounded-xl p-2 text-slate-200" value={filterVisibility} onChange={e => setFilterVisibility(e.target.value)}>
-                  <option value="">All Visibility</option>
-                  <option value="Public">Public</option>
-                  <option value="Private">Private</option>
-                </select>
+              <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800 space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3 text-xs">
+                  <input type="text" className="bg-slate-950 border border-slate-800 rounded-xl p-2 text-slate-200 focus:outline-none" placeholder="Search name or route..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
+                  <select className="bg-slate-950 border border-slate-800 rounded-xl p-2 text-slate-200" value={filterCategory} onChange={e => setFilterCategory(e.target.value)}>
+                    <option value="">All Categories</option>
+                    {API_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                  <select className="bg-slate-950 border border-slate-800 rounded-xl p-2 text-slate-200" value={filterOrg} onChange={e => setFilterOrg(e.target.value)}>
+                    <option value="">All Organisations</option>
+                    {ORGANISATIONS.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                  </select>
+                  <select className="bg-slate-950 border border-slate-800 rounded-xl p-2 text-slate-200" value={filterGovernance} onChange={e => setFilterGovernance(e.target.value)}>
+                    <option value="">All Governance</option>
+                    <option value="Active">Active</option>
+                    <option value="Deprecated">Deprecated</option>
+                    <option value="Formally Governed">Formally Governed</option>
+                  </select>
+                  <select className="bg-slate-950 border border-slate-800 rounded-xl p-2 text-slate-200" value={filterVisibility} onChange={e => setFilterVisibility(e.target.value)}>
+                    <option value="">All Visibility</option>
+                    <option value="Public">Public</option>
+                    <option value="Private">Private</option>
+                  </select>
+                </div>
+                {(searchQuery || filterCategory || filterOrg || filterGovernance || filterVisibility) && (
+                  <div className="flex items-center justify-between text-xs text-slate-400 pt-1 border-t border-slate-800">
+                    <span>Showing {catalogueViewMode === 'apis' ? filteredApis.length : filteredGatewayRoutes.length} matching results</span>
+                    <button onClick={() => { setSearchQuery(''); setFilterCategory(''); setFilterOrg(''); setFilterGovernance(''); setFilterVisibility(''); }} className="text-sky-400 hover:text-sky-300 font-semibold underline">
+                      Clear All Filters
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* APIs View Table */}
@@ -688,17 +730,25 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/60">
-                        {apis.map(api => (
-                          <tr key={api.id} className="hover:bg-slate-800/40">
-                            <td className="p-4 font-semibold text-slate-200"><div><p>{api.name}</p><span className="text-[10px] text-slate-500 font-normal">v{api.version}</span></div></td>
-                            <td className="p-4 font-mono text-slate-300">{api.gatewayBaseUrl}</td>
-                            <td className="p-4 text-slate-300">{api.category}</td>
-                            <td className="p-4">{ORGANISATIONS.find(o => o.id === api.organisationId)?.name}</td>
-                            <td className="p-4"><span className={`px-2 py-0.5 rounded text-[10px] ${api.visibility === 'Public' ? 'bg-blue-950 text-blue-300 border border-blue-800' : 'bg-purple-950 text-purple-300 border border-purple-800'}`}>{api.visibility}</span></td>
-                            <td className="p-4"><span className={`px-2 py-0.5 rounded text-[10px] ${api.governanceStatus === 'Active' ? 'bg-green-950 text-green-300 border border-green-800' : api.governanceStatus === 'Deprecated' ? 'bg-red-950 text-red-300 border border-red-800' : 'bg-indigo-950 text-indigo-300 border border-indigo-800'}`}>{api.governanceStatus}</span></td>
-                            <td className="p-4 text-right"><button onClick={() => setSelectedApi(api)} className="bg-slate-800 hover:bg-slate-700 text-slate-300 p-1.5 rounded-lg"><Eye className="w-3.5 h-3.5" /></button></td>
+                        {filteredApis.length === 0 ? (
+                          <tr>
+                            <td colSpan={7} className="p-8 text-center text-slate-400 italic">
+                              No APIs found matching selected filters. Try clearing Category, Organisation, or Governance filter.
+                            </td>
                           </tr>
-                        ))}
+                        ) : (
+                          filteredApis.map(api => (
+                            <tr key={api.id} className="hover:bg-slate-800/40">
+                              <td className="p-4 font-semibold text-slate-200"><div><p>{api.name}</p><span className="text-[10px] text-slate-500 font-normal">v{api.version}</span></div></td>
+                              <td className="p-4 font-mono text-slate-300">{api.gatewayBaseUrl}</td>
+                              <td className="p-4 text-slate-300">{api.category}</td>
+                              <td className="p-4">{ORGANISATIONS.find(o => o.id === api.organisationId)?.name}</td>
+                              <td className="p-4"><span className={`px-2 py-0.5 rounded text-[10px] ${api.visibility === 'Public' ? 'bg-blue-950 text-blue-300 border border-blue-800' : 'bg-purple-950 text-purple-300 border border-purple-800'}`}>{api.visibility}</span></td>
+                              <td className="p-4"><span className={`px-2 py-0.5 rounded text-[10px] ${api.governanceStatus === 'Active' ? 'bg-green-950 text-green-300 border border-green-800' : api.governanceStatus === 'Deprecated' ? 'bg-red-950 text-red-300 border border-red-800' : 'bg-indigo-950 text-indigo-300 border border-indigo-800'}`}>{api.governanceStatus}</span></td>
+                              <td className="p-4 text-right"><button onClick={() => setSelectedApi(api)} className="bg-slate-800 hover:bg-slate-700 text-slate-300 p-1.5 rounded-lg"><Eye className="w-3.5 h-3.5" /></button></td>
+                            </tr>
+                          ))
+                        )}
                       </tbody>
                     </table>
                   </div>
@@ -721,16 +771,24 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/60">
-                        {gatewayRoutes.map(r => (
-                          <tr key={r.id} className="hover:bg-slate-800/40">
-                            <td className="p-4 font-mono font-bold text-sky-400">{r.gatewayRoute}</td>
-                            <td className="p-4"><span className="px-2 py-0.5 rounded font-mono font-bold text-[10px] bg-slate-950 text-slate-200 border border-slate-800">{r.httpMethod}</span></td>
-                            <td className="p-4 text-slate-200 font-semibold">{r.apiName}</td>
-                            <td className="p-4 text-slate-300">{r.organisation}</td>
-                            <td className="p-4 font-mono text-slate-400">{r.backendService}</td>
-                            <td className="p-4"><span className="px-2 py-0.5 rounded text-[10px] bg-green-950 text-green-300 border border-green-800">{r.status}</span></td>
+                        {filteredGatewayRoutes.length === 0 ? (
+                          <tr>
+                            <td colSpan={6} className="p-8 text-center text-slate-400 italic">
+                              No gateway routes found matching search.
+                            </td>
                           </tr>
-                        ))}
+                        ) : (
+                          filteredGatewayRoutes.map(r => (
+                            <tr key={r.id} className="hover:bg-slate-800/40">
+                              <td className="p-4 font-mono font-bold text-sky-400">{r.gatewayRoute}</td>
+                              <td className="p-4"><span className="px-2 py-0.5 rounded font-mono font-bold text-[10px] bg-slate-950 text-slate-200 border border-slate-800">{r.httpMethod}</span></td>
+                              <td className="p-4 text-slate-200 font-semibold">{r.apiName}</td>
+                              <td className="p-4 text-slate-300">{r.organisation}</td>
+                              <td className="p-4 font-mono text-slate-400">{r.backendService}</td>
+                              <td className="p-4"><span className="px-2 py-0.5 rounded text-[10px] bg-green-950 text-green-300 border border-green-800">{r.status}</span></td>
+                            </tr>
+                          ))
+                        )}
                       </tbody>
                     </table>
                   </div>
