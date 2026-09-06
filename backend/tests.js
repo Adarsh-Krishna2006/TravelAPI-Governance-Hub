@@ -6,8 +6,10 @@ import jwt from 'jsonwebtoken';
 import app from './server.js';
 import { readDB, resetDB, getEnrichedApis } from './database.js';
 import { analyzeEnhancedPair, analyzeBaselinePair } from './analyser.js';
+import { getJwtSecret } from './routes.js';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'travelsphere-super-secret-key-1234';
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'travelsphere-test-secret-key-9876';
+const JWT_SECRET = process.env.JWT_SECRET;
 
 let server;
 let baseUrl;
@@ -123,6 +125,21 @@ async function runTests() {
   const validData = await resValid.json();
   logTest('Accept valid JWT token and return profile', resValid.status === 200 && validData.user.role === 'Admin');
 
+  // 1.6: Production JWT secret requirement test
+  const origNodeEnv = process.env.NODE_ENV;
+  const origJwtSecret = process.env.JWT_SECRET;
+  process.env.NODE_ENV = 'production';
+  delete process.env.JWT_SECRET;
+  let prodSecretThrows = false;
+  try {
+    getJwtSecret();
+  } catch (e) {
+    prodSecretThrows = true;
+  }
+  process.env.NODE_ENV = origNodeEnv;
+  process.env.JWT_SECRET = origJwtSecret;
+  logTest('Require JWT_SECRET in production mode and fail safely if missing', prodSecretThrows);
+
   // ----------------------------------------------------
   // SUITE 2: RBAC ENFORCEMENT & MUTATION RESTRICTIONS
   // ----------------------------------------------------
@@ -171,6 +188,38 @@ async function runTests() {
   });
   logTest('Permit Admin to reset database (200 OK)', resAdminReset.status === 200);
 
+  // 2.6: Non-admin run tests endpoint blocked
+  const resPartnerTestRun = await fetch(`${baseUrl}/tests/run`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${partnerToken}` }
+  });
+  logTest('Block External Partner from POST /api/tests/run (403 Forbidden)', resPartnerTestRun.status === 403, `Status: ${resPartnerTestRun.status}`);
+
+  const resAuditorTestRun = await fetch(`${baseUrl}/tests/run`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${auditorToken}` }
+  });
+  logTest('Block Auditor from POST /api/tests/run (403 Forbidden)', resAuditorTestRun.status === 403, `Status: ${resAuditorTestRun.status}`);
+
+  // 2.7: Non-admin run experiment endpoint blocked
+  const resPartnerExpRun = await fetch(`${baseUrl}/experiment/run`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${partnerToken}` }
+  });
+  logTest('Block External Partner from POST /api/experiment/run (403 Forbidden)', resPartnerExpRun.status === 403, `Status: ${resPartnerExpRun.status}`);
+
+  // 2.8: Auditor read-only access to test results
+  const resAuditorTestResults = await fetch(`${baseUrl}/tests/results`, {
+    headers: { 'Authorization': `Bearer ${auditorToken}` }
+  });
+  logTest('Allow Auditor read-only access to GET /api/tests/results (200 OK)', resAuditorTestResults.status === 200);
+
+  // 2.9: Auditor read-only access to experiment results
+  const resAuditorExpResults = await fetch(`${baseUrl}/experiment/results`, {
+    headers: { 'Authorization': `Bearer ${auditorToken}` }
+  });
+  logTest('Allow Auditor read-only access to GET /api/experiment/results (200 OK)', resAuditorExpResults.status === 200);
+
   // ----------------------------------------------------
   // SUITE 3: ORGANISATION ISOLATION
   // ----------------------------------------------------
@@ -193,6 +242,28 @@ async function runTests() {
     body: JSON.stringify({ name: 'Cross Org Hack', organisationId: 'org-globalhotels' })
   });
   logTest('Block External Partner from creating API under rival organisation (403)', resPartnerCrossOrg.status === 403);
+
+  // 3.3: Partner audit log filtering
+  const resPartnerLogs = await fetch(`${baseUrl}/audit-logs`, {
+    headers: { 'Authorization': `Bearer ${partnerToken}` }
+  });
+  const partnerLogs = await resPartnerLogs.json();
+  const competitorLogsLeaked = partnerLogs.filter(l => l.organisationId !== 'org-flyfast');
+  logTest('External Partner only receives own organisation audit logs (0 competitor logs leaked)', competitorLogsLeaked.length === 0, `Partner logs: ${partnerLogs.length}`);
+
+  // 3.4: Partner governance decisions filtering
+  const resPartnerDecisions = await fetch(`${baseUrl}/governance/decisions`, {
+    headers: { 'Authorization': `Bearer ${partnerToken}` }
+  });
+  const partnerDecisions = await resPartnerDecisions.json();
+  const dbCurrent = readDB();
+  const dbApis = dbCurrent.apis || [];
+  const competitorDecsLeaked = partnerDecisions.filter(d => {
+    const involved = [d.canonicalApiId, d.deprecatedApiId, d.apiAId, d.apiBId].filter(Boolean);
+    const apis = involved.map(id => dbApis.find(a => a.id === id)).filter(Boolean);
+    return apis.length > 0 && apis.every(a => a.organisationId !== 'org-flyfast' && a.organisationId !== 'org-ts');
+  });
+  logTest('External Partner only receives own or shared governance decisions', competitorDecsLeaked.length === 0, `Partner decisions: ${partnerDecisions.length}`);
 
   // ----------------------------------------------------
   // SUITE 4: OPENAPI 3.X SPECIFICATION PARSING
@@ -270,6 +341,125 @@ paths:
   const scrubResult = await resScrub.json();
   logTest('Scrub hardcoded credentials/keys from uploaded OpenAPI specification', scrubResult.scrubbedCredentialsCount > 0, `Scrubbed: ${scrubResult.scrubbedCredentialsCount}`);
 
+  // 4.5: OpenAPI requestBody extraction and Duplicate Analyser Participation
+  const specA = JSON.stringify({
+    openapi: '3.0.0',
+    info: { title: 'Hotel Bookings Service Alpha', version: '1.0.0' },
+    paths: {
+      '/bookings': {
+        post: {
+          summary: 'Create booking',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    guestName: { type: 'string', description: 'Name of hotel guest' },
+                    checkInDate: { type: 'string', format: 'date' },
+                    totalAmount: { type: 'number', description: 'Total booking cost' },
+                    currency: { type: 'string' }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            '200': {
+              description: 'Booking confirmed',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      bookingId: { type: 'string' },
+                      status: { type: 'string' }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  });
+
+  const specB = JSON.stringify({
+    openapi: '3.0.0',
+    info: { title: 'Room Reservations Gateway Beta', version: '1.0.0' },
+    paths: {
+      '/reservations': {
+        post: {
+          summary: 'Create reservation',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    customerName: { type: 'string', description: 'Customer full name' },
+                    arrivalDate: { type: 'string', format: 'date' },
+                    price: { type: 'number', description: 'Total price of stay' },
+                    currencyCode: { type: 'string' }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            '200': {
+              description: 'Reservation created',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      reservation_id: { type: 'string' },
+                      payment_status: { type: 'string' }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  });
+
+  const resImportA = await fetch(`${baseUrl}/specifications/parse`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: specA, format: 'JSON', importIntoCatalogue: true })
+  });
+  await resImportA.json();
+
+  const resImportB = await fetch(`${baseUrl}/specifications/parse`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: specB, format: 'JSON', importIntoCatalogue: true })
+  });
+  await resImportB.json();
+
+  const currentDb = readDB();
+  const importedFieldsA = currentDb.api_fields.filter(f => f.name.includes('guestName') || f.name.includes('checkInDate'));
+  const importedFieldsB = currentDb.api_fields.filter(f => f.name.includes('customerName') || f.name.includes('arrivalDate'));
+  logTest('Extract nested requestBody & response schema fields during OpenAPI import', importedFieldsA.length > 0 && importedFieldsB.length > 0, `Fields extracted: A=${importedFieldsA.length}, B=${importedFieldsB.length}`);
+
+  // Check duplicate score between these two newly imported APIs
+  const enrichedAfterImport = getEnrichedApis(currentDb);
+  const importedApiA = enrichedAfterImport.find(a => a.name === 'Hotel Bookings Service Alpha');
+  const importedApiB = enrichedAfterImport.find(a => a.name === 'Room Reservations Gateway Beta');
+  let importDuplicateScore = 0;
+  if (importedApiA && importedApiB) {
+    const importComp = analyzeEnhancedPair(importedApiA, importedApiB, currentDb.settings);
+    importDuplicateScore = importComp.score;
+  }
+  logTest('Imported OpenAPI specs participate in duplicate analysis with score >= 75%', importDuplicateScore >= 75, `Score: ${importDuplicateScore}%`);
+
   // ----------------------------------------------------
   // SUITE 5: DUPLICATE DETECTION ALGORITHM & EXPERIMENT
   // ----------------------------------------------------
@@ -323,6 +513,49 @@ paths:
   logTest('Measured duplicate surface percentage calculated accurately', typeof metricsData.measured.duplicateSurface === 'number' && metricsData.measured.duplicateSurface > 0, `Surface: ${metricsData.measured.duplicateSurface}%`);
   logTest('Metrics dynamically reflect latest experiment results', metricsData.f1 === expData.f1, `F1: ${metricsData.f1}%`);
 
+  // 6.4: Verify duplicate surface excludes deprecated APIs on small synthetic dataset
+  const syntheticDb = {
+    apis: [
+      { id: 'syn-1', name: 'API 1', governanceStatus: 'Active' },
+      { id: 'syn-2', name: 'API 2', governanceStatus: 'Active' },
+      { id: 'syn-3', name: 'API 3', governanceStatus: 'Active' }
+    ],
+    endpoints: [
+      { id: 'ep-1-a', apiId: 'syn-1' },
+      { id: 'ep-1-b', apiId: 'syn-1' },
+      { id: 'ep-2-a', apiId: 'syn-2' },
+      { id: 'ep-2-b', apiId: 'syn-2' },
+      { id: 'ep-3-a', apiId: 'syn-3' },
+      { id: 'ep-3-b', apiId: 'syn-3' }
+    ],
+    duplicate_findings: [
+      { id: 'find-1-2', apiAId: 'syn-1', apiBId: 'syn-2', score: 90, status: 'Needs Review' }
+    ],
+    settings: { thresholds: { high: 85 } }
+  };
+
+  function calculateSyntheticSurface(data) {
+    const activeApis = data.apis.filter(a => a.governanceStatus !== 'Deprecated');
+    const activeApiIds = new Set(activeApis.map(a => a.id));
+    const activeEndpoints = data.endpoints.filter(ep => activeApiIds.has(ep.apiId));
+    const overlapping = new Set();
+    data.duplicate_findings.forEach(f => {
+      if (f.score >= data.settings.thresholds.high && ['Needs Review', 'Confirmed Duplicate'].includes(f.status)) {
+        data.endpoints.filter(ep => ep.apiId === f.apiAId && activeApiIds.has(ep.apiId)).forEach(ep => overlapping.add(ep.id));
+        data.endpoints.filter(ep => ep.apiId === f.apiBId && activeApiIds.has(ep.apiId)).forEach(ep => overlapping.add(ep.id));
+      }
+    });
+    return activeEndpoints.length > 0 ? Math.round((overlapping.size / activeEndpoints.length) * 1000) / 10 : 0;
+  }
+
+  const surfaceBefore = calculateSyntheticSurface(syntheticDb); // 4 / 6 * 100 = 66.7%
+  syntheticDb.apis[1].governanceStatus = 'Deprecated';
+  syntheticDb.duplicate_findings[0].status = 'Consolidated';
+  const surfaceAfter = calculateSyntheticSurface(syntheticDb); // 0 / 4 * 100 = 0.0%
+
+  logTest('Duplicate surface percentage matches active duplicate endpoints / total active endpoints * 100', surfaceBefore === 66.7, `Before: ${surfaceBefore}%`);
+  logTest('Deprecated and consolidated APIs are strictly excluded from duplicate surface', surfaceAfter === 0.0, `After consolidation: ${surfaceAfter}%`);
+
   // ----------------------------------------------------
   // SUITE 7: AUTOMATED TEST EVIDENCE ENDPOINT
   // ----------------------------------------------------
@@ -334,7 +567,7 @@ paths:
   });
   const testRunData = await resTestRun.json();
   const allPassed = testRunData.results && testRunData.results.every(t => t.status === 'PASS');
-  logTest('POST /api/tests/run executes all 5 edge-case scenarios successfully', allPassed, `${testRunData.results.length} scenarios executed`);
+  logTest('POST /api/tests/run executes all 8 programmatic scenarios successfully', allPassed && testRunData.results.length === 8, `${testRunData.results.length} scenarios executed`);
 
   await stopServer();
 

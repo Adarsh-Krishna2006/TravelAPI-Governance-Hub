@@ -10,6 +10,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Production JWT_SECRET requirement check
+if (process.env.NODE_ENV === 'production' && (!process.env.JWT_SECRET || process.env.JWT_SECRET.trim() === '')) {
+  console.error("FATAL SECURITY ERROR: JWT_SECRET environment variable is required in production mode.");
+  process.exit(1);
+}
+
 // Configurable CORS via FRONTEND_URL or permissive for development
 const frontendUrl = process.env.FRONTEND_URL;
 app.use(cors({

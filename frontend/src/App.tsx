@@ -166,6 +166,12 @@ export default function App() {
 
       const settingsData = await safeJsonFetch('/api/settings', headers);
       if (settingsData) setSettings(settingsData);
+
+      const testData = await safeJsonFetch('/api/tests/results', headers);
+      if (testData && testData.results) setTestResults(testData.results);
+
+      const expResults = await safeJsonFetch('/api/experiment/results', headers);
+      if (expResults) setExperimentData(expResults);
     } catch (err: any) {
       console.error(err);
     } finally {
@@ -656,24 +662,24 @@ export default function App() {
               {/* Metric Cards - Role Customized */}
               {currentUser?.role === 'External Partner' ? (
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800"><p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">FlyFast Airline APIs</p><p className="text-2xl font-extrabold text-white">4</p></div>
-                  <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800"><p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Shared TravelSphere Endpoints</p><p className="text-2xl font-extrabold text-sky-400">8</p></div>
-                  <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800"><p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Partner Overlap Findings</p><p className="text-2xl font-extrabold text-amber-400">{findings.length}</p></div>
-                  <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800"><p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Competitor APIs Redacted</p><p className="text-2xl font-extrabold text-emerald-400">13 (Protected)</p></div>
+                  <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800"><p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">{metrics.roleMetrics?.partnerName || 'Partner'} APIs</p><p className="text-2xl font-extrabold text-white">{metrics.roleMetrics?.partnerApisCount ?? apis.filter(a => a.organisationId === currentUser?.organisationId).length}</p></div>
+                  <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800"><p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Partner Endpoints</p><p className="text-2xl font-extrabold text-sky-400">{metrics.roleMetrics?.partnerEndpointsCount ?? gatewayRoutes.filter(r => r.organisationId === currentUser?.organisationId).length}</p></div>
+                  <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800"><p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Partner Overlap Findings</p><p className="text-2xl font-extrabold text-amber-400">{metrics.roleMetrics?.partnerFindingsCount ?? findings.length}</p></div>
+                  <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800"><p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Competitor APIs Redacted</p><p className="text-2xl font-extrabold text-emerald-400">{metrics.roleMetrics?.competitorApisRedacted ?? 0} (Protected)</p></div>
                 </div>
               ) : currentUser?.role === 'API Owner' ? (
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800"><p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">TravelSphere Owned APIs</p><p className="text-2xl font-extrabold text-white">14</p></div>
-                  <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800"><p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Active Endpoints</p><p className="text-2xl font-extrabold text-sky-400">42</p></div>
-                  <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800"><p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Partner Overlaps</p><p className="text-2xl font-extrabold text-amber-400">8</p></div>
-                  <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800"><p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Pending Reviews</p><p className="text-2xl font-extrabold text-indigo-400">5</p></div>
+                  <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800"><p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">TravelSphere Owned APIs</p><p className="text-2xl font-extrabold text-white">{metrics.roleMetrics?.ownedApisCount ?? apis.filter(a => a.organisationId === currentUser?.organisationId).length}</p></div>
+                  <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800"><p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Active Endpoints</p><p className="text-2xl font-extrabold text-sky-400">{metrics.roleMetrics?.internalEndpointsCount ?? gatewayRoutes.filter(r => r.organisationId === currentUser?.organisationId).length}</p></div>
+                  <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800"><p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Partner Overlaps</p><p className="text-2xl font-extrabold text-amber-400">{metrics.roleMetrics?.partnerOverlapsCount !== undefined ? metrics.roleMetrics.partnerOverlapsCount : 'Not measured'}</p></div>
+                  <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800"><p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Pending Reviews</p><p className="text-2xl font-extrabold text-indigo-400">{metrics.roleMetrics?.pendingReviewsCount ?? findings.filter(f => f.status === 'Needs Review').length}</p></div>
                 </div>
               ) : currentUser?.role === 'Auditor' ? (
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800"><p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Audited API Specifications</p><p className="text-2xl font-extrabold text-white">{metrics.totalApis}</p></div>
                   <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800"><p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Governance Decisions</p><p className="text-2xl font-extrabold text-sky-400">{governanceDecisions.length}</p></div>
                   <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800"><p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Immutable Audit Logs</p><p className="text-2xl font-extrabold text-indigo-400">{auditLogs.length}</p></div>
-                  <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800"><p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Compliance Pass Rate</p><p className="text-2xl font-extrabold text-emerald-400">100%</p></div>
+                  <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800"><p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Compliance Pass Rate</p><p className="text-2xl font-extrabold text-emerald-400">{metrics.roleMetrics?.compliancePassRate !== null && metrics.roleMetrics?.compliancePassRate !== undefined ? `${metrics.roleMetrics.compliancePassRate}%` : 'Not measured'}</p></div>
                 </div>
               ) : (
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -693,15 +699,22 @@ export default function App() {
                 
                 {/* 1. Baseline vs Target vs Measured Surface */}
                 <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 space-y-3">
-                  <h3 className="font-bold text-sm text-slate-200">Duplicate API Surface Reduction Surface</h3>
+                  <div className="flex justify-between items-center">
+                    <h3 className="font-bold text-sm text-slate-200">Duplicate API Surface Reduction</h3>
+                    <span className="text-[10px] text-slate-400">{metrics.baseline ? `Baseline: ${metrics.baseline.duplicateSurface}%` : 'No baseline experiment run'}</span>
+                  </div>
                   <div className="h-56">
                     <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={[{ name: 'Baseline', surface: metrics.baseline.duplicateSurface }, { name: 'Target Target', surface: 15 }, { name: 'Measured Current', surface: metrics.measured.duplicateSurface }]}>
+                      <AreaChart data={[
+                        { name: 'Baseline', surface: metrics.baseline ? metrics.baseline.duplicateSurface : null },
+                        { name: 'Target', surface: 15 },
+                        { name: 'Current Measured', surface: metrics.measured.duplicateSurface }
+                      ]}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                         <XAxis dataKey="name" stroke="#94a3b8" fontSize={10} />
                         <YAxis stroke="#94a3b8" fontSize={10} unit="%" />
                         <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155' }} />
-                        <Area type="monotone" dataKey="surface" stroke="#0ea5e9" fill="#0ea5e9" fillOpacity={0.2} />
+                        <Area type="monotone" dataKey="surface" stroke="#0ea5e9" fill="#0ea5e9" fillOpacity={0.2} connectNulls />
                       </AreaChart>
                     </ResponsiveContainer>
                   </div>
@@ -1353,7 +1366,14 @@ export default function App() {
                   <h2 className="text-xl font-bold">Baseline vs Enhanced Analyser Experiment</h2>
                   <p className="text-xs text-slate-400">Runs comparison performance benchmarking on the dataset to calculate F1 score and speed.</p>
                 </div>
-                <button onClick={handleRunExperiment} className="bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs py-2.5 px-5 rounded-xl flex items-center gap-2"><TrendingUp className="w-4 h-4" /> Run Experiment Suite</button>
+                {currentUser?.role === 'Admin' ? (
+                  <button onClick={handleRunExperiment} className="bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs py-2.5 px-5 rounded-xl flex items-center gap-2"><TrendingUp className="w-4 h-4" /> Run Experiment Suite</button>
+                ) : (
+                  <div className="px-4 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-xs text-slate-400 flex items-center gap-2">
+                    <Lock className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Admin role required to run experiment suite (Read-only view)</span>
+                  </div>
+                )}
               </div>
 
               {!experimentData && (
@@ -1415,41 +1435,49 @@ export default function App() {
                   <h2 className="text-xl font-bold">Automated Test Evidence Reports</h2>
                   <p className="text-xs text-slate-400">Executes normal, edge case, adversarial, and security test suites against the backend.</p>
                 </div>
-                <button
-                  onClick={handleRunTests}
-                  disabled={loading}
-                  className="bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs py-2.5 px-5 rounded-xl flex items-center gap-2 shadow-lg shadow-sky-600/20"
-                >
-                  {loading && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
-                  RUN ALL TESTS
-                </button>
+                {currentUser?.role === 'Admin' ? (
+                  <button
+                    onClick={handleRunTests}
+                    disabled={loading}
+                    className="bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs py-2.5 px-5 rounded-xl flex items-center gap-2 shadow-lg shadow-sky-600/20"
+                  >
+                    {loading && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                    RUN ALL TESTS
+                  </button>
+                ) : (
+                  <div className="px-4 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-xs text-slate-400 flex items-center gap-2">
+                    <Lock className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Admin role required to run automated tests (Read-only view)</span>
+                  </div>
+                )}
               </div>
 
               <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden p-5">
                 <p className="text-xs text-slate-400 mb-4 font-bold">Verified Edge Cases, Security Boundaries & Algorithms:</p>
-                <div className="space-y-3 text-xs">
-                  {(testResults.length > 0 ? testResults : [
-                    { id: '1', testName: '1. Same Name, Different Business Meaning (/bookings vs /flight-bookings)', expectedResult: 'Score < 40% (Not Duplicate)', status: 'PASS', details: 'Verified vertical domains (Hotel vs Flight) are segregated even with shared route tokens.' },
-                    { id: '2', testName: '2. Completely Different Names, Same Semantic Meaning (/travel-orders vs /reservation-management)', expectedResult: 'Score >= 60% (Potential/High Duplicate)', status: 'PASS', details: 'Verified semantic concept matching catches semantic synonyms across disparate routes.' },
-                    { id: '3', testName: '3. Missing Field Descriptions (Empty OpenAPI Schemas)', expectedResult: 'Safe calculation without exception', status: 'PASS', details: 'Handled zero-field inputs safely without NaN or crash.' },
-                    { id: '4', testName: '4. Invalid/Adversarial OpenAPI Specification (Corrupt YAML/JSON)', expectedResult: 'Reject payload safely without server crash', status: 'PASS', details: 'Caught malformed syntax exception safely in try/catch sandbox.' },
-                    { id: '5', testName: '5. Cross-Organisation Unauthorized Access Attempt (RBAC Boundary)', expectedResult: '403 Forbidden on rival partner spec modification', status: 'PASS', details: 'Verified data isolation boundary prevents competitive intelligence leakage.' }
-                  ]).map((t: any, i: number) => (
-                    <div key={t.id || i} className="p-3 bg-slate-950 rounded-xl border border-slate-800 flex justify-between items-center gap-4">
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2">
-                          {t.category && <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 text-sky-300 uppercase">{t.category}</span>}
-                          <p className="font-bold text-slate-200">{t.testName}</p>
+                {testResults.length === 0 ? (
+                  <div className="text-center py-8 text-slate-500 text-xs space-y-2">
+                    <p className="font-semibold text-slate-400">No test results recorded yet.</p>
+                    <p>Run automated tests as Admin to record real security and algorithm verification evidence.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3 text-xs">
+                    {testResults.map((t: any, i: number) => (
+                      <div key={t.id || i} className="p-3 bg-slate-950 rounded-xl border border-slate-800 flex justify-between items-center gap-4">
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            {t.category && <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 text-sky-300 uppercase">{t.category}</span>}
+                            <p className="font-bold text-slate-200">{t.testName}</p>
+                          </div>
+                          {t.details && <p className="text-[11px] text-slate-400">{t.details}</p>}
+                          <p className="text-[10px] text-slate-500">Expected: {t.expectedResult} {t.actualResult ? `| Actual: ${t.actualResult}` : ''}</p>
                         </div>
-                        {t.details && <p className="text-[11px] text-slate-400">{t.details}</p>}
-                        <p className="text-[10px] text-slate-500">Expected: {t.expectedResult} {t.actualResult ? `| Actual: ${t.actualResult}` : ''}</p>
+                        <span className={`px-3 py-1 text-xs font-bold rounded-xl border flex-shrink-0 ${t.status === 'PASS' ? 'bg-emerald-950/80 text-emerald-300 border-emerald-800' : 'bg-rose-950/80 text-rose-300 border-rose-800'}`}>
+                          {t.status}
+                        </span>
                       </div>
-                      <span className={`px-3 py-1 text-xs font-bold rounded-xl border flex-shrink-0 ${t.status === 'PASS' ? 'bg-emerald-950/80 text-emerald-300 border-emerald-800' : 'bg-rose-950/80 text-rose-300 border-rose-800'}`}>
-                        {t.status}
-                      </span>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           )}

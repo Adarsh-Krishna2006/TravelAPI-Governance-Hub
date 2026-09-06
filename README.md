@@ -51,6 +51,15 @@ The Duplication Analyser computes weighted score signals (0-100) between any two
 * **Node.js**: v18.0.0 or higher
 * **npm**: v9.0.0 or higher
 
+### Environment Configuration
+Copy `.env.example` to `.env` in the root directory:
+```bash
+cp .env.example .env
+```
+* **`JWT_SECRET`**: Required in production (`NODE_ENV=production`). The backend will fail safely at startup if missing.
+* **`PORT`**: Default 5000 for backend Express server.
+* **`FRONTEND_URL`**: Optional CORS origin restriction for production.
+
 ### Steps to Run
 
 1. **Extract & Initialize Projects**:
@@ -58,7 +67,7 @@ The Duplication Analyser computes weighted score signals (0-100) between any two
    ```bash
    npm run install:all
    ```
-   This will install all root dev tools (`concurrently`), followed by frontend and backend package dependencies.
+   This will install dev tools followed by frontend and backend package dependencies.
 
 2. **Boot Development Server**:
    Start both the Express backend server (port 5000) and the Vite dev server (port 5173) concurrently:
@@ -82,25 +91,25 @@ To demonstrate the full-stack prototype in a structured review:
 2. Click the **"Guided Demo Tour"** button at the bottom left.
 3. The popup tutorial will guide you step-by-step:
    - Switches role credentials to **Admin**.
-   - Inspects the active **API Catalogue**.
-   - Uploads a new partner specification (**StayEasy Room Reserve** duplicate spec).
+   - Inspects the active **API Catalogue** (25 APIs, 75 endpoints).
+   - Uploads a new partner specification (**StayEasy Room Reserve** duplicate spec with nested body schema).
    - Triggers the **Catalogue Duplicate Scan**.
    - Reviews the **Side-by-Side Comparison** and highlights semantic field connections.
    - Submits a **Consolidation Justification** to deprecate StayEasy and redirect routes.
-   - Monitors the updated **Duplicate Surface Metrics** down to the target 15% rate on the Dashboard.
+   - Monitors the updated **Duplicate Surface Metrics** down to the target rate on the Dashboard.
 
 ---
 
 ## 5. Automated Tests & Security Verification
 
-The platform includes a test runner covering 25 automated assertions across 7 security and algorithm suites:
-1. **Authentication Suite**: Enforces HTTP 401 on missing, malformed, invalid, or expired JWT tokens with zero silent demo fallbacks.
-2. **RBAC & Mutation Security**: Restricts database resets, consolidation, formal governance, and full demo runner to Admin (HTTP 403 for API Owner, External Partner, and Auditor). Enforces read-only access for Auditor.
-3. **Multi-Organisation Isolation**: Quarantines rival partner private specifications and findings from External Partner sessions.
-4. **OpenAPI 3.x Parser**: Validates JSON and YAML specifications via `js-yaml`, handles adversarial/malformed payloads safely, and scrubs hardcoded credentials.
-5. **Duplicate Detection & Semantics**: Verifies $\ge 85\%$ detection for confirmed duplicates, $< 40\%$ for false positive controls, and $\ge 60\%$ for semantic synonyms.
-6. **Endpoint-Level Duplicate Surface**: Calculates measured duplication percentage over active endpoints rather than gross API counts.
-7. **Adversarial & Edge Cases**: Validates zero-parameter inputs, schema bombs, and malicious strings without uncaught server exceptions.
+The platform includes a test runner covering 37 automated assertions across 7 security and algorithm suites:
+1. **Authentication Suite**: Enforces HTTP 401 on missing, malformed, invalid, or expired JWT tokens with zero silent demo fallbacks. Validates that `JWT_SECRET` is strictly enforced in production.
+2. **RBAC & Mutation Security**: Restricts database resets, consolidation, formal governance, test runner (`POST /api/tests/run`), and benchmark experiment (`POST /api/experiment/run`) to Admin (HTTP 403 for API Owner, External Partner, and Auditor). Provides authenticated read-only access for Auditor on `/api/tests/results` and `/api/experiment/results`.
+3. **Multi-Organisation Isolation**: Quarantines rival partner private specifications and findings from External Partner sessions. Partitions audit logs and governance decisions so External Partners only see their own records.
+4. **OpenAPI 3.x Parser**: Validates JSON and YAML specifications via `js-yaml`, handles adversarial/malformed payloads safely, and scrubs hardcoded credentials. Recursively extracts nested `requestBody` and response schema properties with circular reference protection (depth $\le 5$), enabling imported specs to participate directly in duplicate analysis.
+5. **Duplicate Detection & Semantics**: Verifies $\ge 85\%$ detection for confirmed duplicates, $< 40\%$ for false positive controls, and $\ge 60\%$ for semantic synonyms. Benchmarks dynamic baseline vs enhanced algorithm metrics without hardcoded numbers.
+6. **Endpoint-Level Duplicate Surface**: Calculates measured duplication percentage over active endpoints ($N=75$) rather than gross API counts. Formally verifies deprecation exclusion using a controlled synthetic dataset.
+7. **Adversarial & Edge Cases**: Validates zero-parameter inputs, schema bombs, and corrupt payloads without uncaught server exceptions.
 
 ### Running Automated Tests
 ```bash
@@ -120,9 +129,11 @@ node backend/tests.js
 
 ---
 
-## 7. Experiment Methodology & Known Limitations
+## 7. Seed Data & Methodology
 
-* **Seeding Scale**: Seeds 22 original travel endpoints mapping across internal services, FlyFast, StayEasy, GlobalHotels, and SecurePay networks.
-* **Ground Truth Reviewing**: Reviewer overrides (Confirmed Duplicate vs False Positive) are stored as the ground truth array to compute analytical Precision and Recall coefficients dynamically.
-* **Limitations**: Field parsing matches JSON objects up to 3 tiers of nesting. Recursive structures are truncated during evaluation.
-* **Future Work**: Integration of LLM semantic classifiers to map descriptions, and auto-generation of redirect router adapters for consolidated routes.
+* **Seeding Scale**: The default seed contains **25 APIs and 75 endpoints** spanning 4 organisations (TravelSphere, StayEasy Hotels, GlobalHotels, FlyFast Airlines, and PayLink Payments).
+* **Ground Truth Reviewing**: Real ground-truth pairs are evaluated dynamically to calculate True Positives, False Positives, False Negatives, True Negatives, Precision, Recall, and F1 scores with zero invented numbers.
+* **Schema Flattening**: Nested properties are extracted and flattened with dotted notation (e.g., `guest.address.city`) up to 5 levels deep.
+* **Surface Formula**:
+  $$\text{Duplicate Surface \%} = \frac{\text{Active Duplicate Endpoints}}{\text{Total Active Endpoints}} \times 100$$
+  Endpoints belonging to deprecated or consolidated APIs are strictly excluded from the active endpoint pool.

@@ -430,13 +430,20 @@ export function readDB() {
 }
 
 export function writeDB(data) {
-  try {
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf8');
-    return true;
-  } catch (err) {
-    console.error("Error writing database JSON file", err);
-    return false;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf8');
+      return true;
+    } catch (err) {
+      if (attempt === 3) {
+        console.error("Error writing database JSON file", err);
+        return false;
+      }
+      const end = Date.now() + 60;
+      while (Date.now() < end) {}
+    }
   }
+  return false;
 }
 
 export function resetDB() {
