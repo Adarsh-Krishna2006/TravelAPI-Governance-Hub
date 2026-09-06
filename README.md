@@ -91,18 +91,36 @@ To demonstrate the full-stack prototype in a structured review:
 
 ---
 
-## 5. Automated Edge Cases & Adversarial Verification
+## 5. Automated Tests & Security Verification
 
-The platform contains a dedicated **Edge Case Tests** page running the following suites:
-1. **Similar Name, Different Function**: Checks if `/booking-payment` vs `/booking-history` are marked as **Not Duplicate** due to differing category metrics.
-2. **Different Names, Same Function**: Verifies if `/reservations` vs `/travel-orders` are flagged as **Potential/High Priority** based on semantic mapping.
-3. **Incomplete Specification**: Checks warnings generation when uploading APIs missing ownership and parameters.
-4. **Malicious/Adversarial Spec**: Uploads oversized payloads, corrupted JSON structures, and checks that server interceptors reject payloads without crashing.
-5. **Access Control Failure**: Verifies that External Partners cannot read sensitive private schemas owned by rival networks.
+The platform includes a test runner covering 25 automated assertions across 7 security and algorithm suites:
+1. **Authentication Suite**: Enforces HTTP 401 on missing, malformed, invalid, or expired JWT tokens with zero silent demo fallbacks.
+2. **RBAC & Mutation Security**: Restricts database resets, consolidation, formal governance, and full demo runner to Admin (HTTP 403 for API Owner, External Partner, and Auditor). Enforces read-only access for Auditor.
+3. **Multi-Organisation Isolation**: Quarantines rival partner private specifications and findings from External Partner sessions.
+4. **OpenAPI 3.x Parser**: Validates JSON and YAML specifications via `js-yaml`, handles adversarial/malformed payloads safely, and scrubs hardcoded credentials.
+5. **Duplicate Detection & Semantics**: Verifies $\ge 85\%$ detection for confirmed duplicates, $< 40\%$ for false positive controls, and $\ge 60\%$ for semantic synonyms.
+6. **Endpoint-Level Duplicate Surface**: Calculates measured duplication percentage over active endpoints rather than gross API counts.
+7. **Adversarial & Edge Cases**: Validates zero-parameter inputs, schema bombs, and malicious strings without uncaught server exceptions.
+
+### Running Automated Tests
+```bash
+npm test
+```
+Or directly via Node:
+```bash
+node backend/tests.js
+```
 
 ---
 
-## 6. Experiment Methodology & Known Limitations
+## 6. Live Deployment
+
+* **Render Production URL**: [https://travelapi-governance-hub.onrender.com/](https://travelapi-governance-hub.onrender.com/)
+* **Default Admin Demo User**: `admin@travelsphere.demo` (Switch roles via Demo Role Switcher bar)
+
+---
+
+## 7. Experiment Methodology & Known Limitations
 
 * **Seeding Scale**: Seeds 22 original travel endpoints mapping across internal services, FlyFast, StayEasy, GlobalHotels, and SecurePay networks.
 * **Ground Truth Reviewing**: Reviewer overrides (Confirmed Duplicate vs False Positive) are stored as the ground truth array to compute analytical Precision and Recall coefficients dynamically.

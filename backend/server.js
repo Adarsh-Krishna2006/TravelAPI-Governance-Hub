@@ -3,15 +3,21 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import apiRouter from './routes.js';
-import { readDB, writeDB } from './database.js';
+import { readDB, writeDB, getEnrichedApis } from './database.js';
 import { runFullAnalysis } from './analyser.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-app.use(cors());
-app.use(express.json({ limit: '10mb' })); // Limit checks for malicious massive specs
+// Configurable CORS via FRONTEND_URL or permissive for development
+const frontendUrl = process.env.FRONTEND_URL;
+app.use(cors({
+  origin: frontendUrl && frontendUrl !== '*' ? frontendUrl : true,
+  credentials: true
+}));
+
+app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Attach API endpoints
@@ -43,26 +49,31 @@ app.use((err, req, res, next) => {
 });
 
 // Boot the server and run initial duplicate detection
-app.listen(PORT, () => {
-  console.log(`=========================================`);
-  console.log(` TravelAPI Governance Hub Booted Successfully!`);
-  console.log(` Access Backend APIs at http://localhost:${PORT}/api`);
-  console.log(`=========================================`);
+if (process.env.NODE_ENV !== 'test') {
+  app.listen(PORT, () => {
+    console.log(`=========================================`);
+    console.log(` TravelAPI Governance Hub Booted Successfully!`);
+    console.log(` Access Backend APIs at http://localhost:${PORT}/api`);
+    console.log(`=========================================`);
 
-  try {
-    const db = readDB();
-    console.log(`DB Loaded: ${db.apis.length} APIs indexed, ${db.users.length} mock users.`);
-    
-    // Automatically trigger initial analysis on boot if none exists
-    if (!db.duplicate_findings || db.duplicate_findings.length === 0) {
-      console.log(`Running initial duplicate analysis scan...`);
-      const results = runFullAnalysis(db.apis, db.settings);
+    try {
+      const db = readDB();
+      console.log(`DB Loaded: ${db.apis.length} APIs indexed, ${db.users.length} mock users, ${db.endpoints.length} endpoints.`);
       
-      db.duplicate_findings = results;
-      writeDB(db);
-      console.log(`Initial analysis complete: generated ${results.length} unique pair records.`);
+      // Automatically trigger initial analysis on boot if none exists
+      if (!db.duplicate_findings || db.duplicate_findings.length === 0) {
+        console.log(`Running initial duplicate analysis scan on enriched APIs...`);
+        const enriched = getEnrichedApis(db);
+        const results = runFullAnalysis(enriched, db.settings);
+        
+        db.duplicate_findings = results;
+        writeDB(db);
+        console.log(`Initial analysis complete: generated ${results.length} unique pair records.`);
+      }
+    } catch (e) {
+      console.error("Failed to run startup duplication scan", e);
     }
-  } catch (e) {
-    console.error("Failed to run startup duplication scan", e);
-  }
-});
+  });
+}
+
+export default app;
