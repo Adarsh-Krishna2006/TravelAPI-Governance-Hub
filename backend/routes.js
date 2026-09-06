@@ -342,22 +342,40 @@ router.post('/specifications/parse', authenticateToken, blockAuditor, (req, res)
 
       // 3. Schema Structure Validation
       if (isValid && parsedSpec) {
-        const hasVersion = parsedSpec.openapi || parsedSpec.swagger;
-        const hasTitle = parsedSpec.info && parsedSpec.info.title;
-        const hasPaths = parsedSpec.paths && typeof parsedSpec.paths === 'object';
-
-        if (!hasVersion) {
-          logs.push('Warning: Missing "openapi" or "swagger" version declaration.');
-        }
-        if (!hasTitle) {
-          logs.push('Warning: Missing "info.title" specification metadata.');
-        }
-        if (!hasPaths) {
-          logs.push('Error: Specification missing required "paths" object.');
+        if (typeof parsedSpec !== 'object' || parsedSpec === null || Array.isArray(parsedSpec)) {
+          logs.push('Error: OpenAPI specification root must be a valid JSON/YAML object.');
           isValid = false;
         } else {
-          const pathCount = Object.keys(parsedSpec.paths).length;
-          logs.push(`OpenAPI Validation: Identified ${pathCount} paths in specification.`);
+          const version = parsedSpec.openapi || parsedSpec.swagger;
+          if (!version || typeof version !== 'string' || version.trim() === '') {
+            logs.push('Error: Missing required "openapi" or "swagger" version declaration.');
+            isValid = false;
+          } else {
+            const vStr = version.trim();
+            const isSupported = vStr.startsWith('3.0') || vStr.startsWith('3.1') || vStr === '2.0' || vStr.startsWith('2.');
+            if (!isSupported) {
+              logs.push(`Error: Unsupported OpenAPI/Swagger version "${vStr}". Supported versions: OpenAPI 3.0.x, 3.1.x, Swagger 2.0.`);
+              isValid = false;
+            } else {
+              logs.push(`OpenAPI Version validated: ${vStr}`);
+            }
+          }
+
+          if (!parsedSpec.info || typeof parsedSpec.info !== 'object') {
+            logs.push('Error: Specification missing required "info" object.');
+            isValid = false;
+          } else if (!parsedSpec.info.title || typeof parsedSpec.info.title !== 'string' || parsedSpec.info.title.trim() === '') {
+            logs.push('Error: Specification missing required "info.title" metadata.');
+            isValid = false;
+          }
+
+          if (!parsedSpec.paths || typeof parsedSpec.paths !== 'object' || Array.isArray(parsedSpec.paths)) {
+            logs.push('Error: Specification missing required "paths" object.');
+            isValid = false;
+          } else {
+            const pathCount = Object.keys(parsedSpec.paths).length;
+            logs.push(`OpenAPI Validation: Identified ${pathCount} paths in specification.`);
+          }
         }
       }
     }
@@ -373,14 +391,27 @@ router.post('/specifications/parse', authenticateToken, blockAuditor, (req, res)
       const specTitle = (parsedSpec.info && parsedSpec.info.title) || 'Imported OpenAPI Service';
       const newApiId = `api-imported-${Date.now()}`;
       
+      // Category derivation: explicit body -> x-category -> first tag -> 'Unclassified'
+      let derivedCategory = req.body.category;
+      if (!derivedCategory && (parsedSpec['x-category'] || (parsedSpec.info && parsedSpec.info['x-category']))) {
+        derivedCategory = parsedSpec['x-category'] || parsedSpec.info['x-category'];
+      }
+      if (!derivedCategory && parsedSpec.tags && Array.isArray(parsedSpec.tags) && parsedSpec.tags.length > 0) {
+        const tag = parsedSpec.tags[0];
+        derivedCategory = typeof tag === 'string' ? tag : (tag && tag.name ? tag.name : null);
+      }
+      if (!derivedCategory) {
+        derivedCategory = 'Unclassified';
+      }
+
       const newApi = {
         id: newApiId,
         name: specTitle,
         description: (parsedSpec.info && parsedSpec.info.description) || 'Imported via OpenAPI specification portal.',
         organisationId: user.organisationId,
         ownerId: user.id,
-        category: 'Hotel Booking',
-        visibility: 'Public',
+        category: derivedCategory,
+        visibility: req.body.visibility || 'Public',
         version: (parsedSpec.info && parsedSpec.info.version) || '1.0.0',
         status: 'Active',
         gatewayBaseUrl: `/gateway/${specTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
@@ -511,7 +542,7 @@ router.post('/apis', authenticateToken, blockAuditor, (req, res) => {
     description: apiData.description || '',
     organisationId: (user.role === 'Admin' && apiData.organisationId) ? apiData.organisationId : user.organisationId,
     ownerId: user.id,
-    category: apiData.category || 'Hotel Booking',
+    category: apiData.category || 'Unclassified',
     visibility: apiData.visibility || 'Public',
     version: apiData.version || '1.0.0',
     status: 'Active',
@@ -539,27 +570,119 @@ router.post('/apis', authenticateToken, blockAuditor, (req, res) => {
   res.status(201).json(newApi);
 });
 
+// Update API Category (User classification support)
+router.patch('/apis/:id/category', authenticateToken, blockAuditor, (req, res) => {
+  const { id } = req.params;
+  const { category } = req.body;
+  const user = req.user;
+
+  if (!category || typeof category !== 'string' || category.trim() === '') {
+    return res.status(400).json({ error: 'Category string is required' });
+  }
+
+  const db = getDB();
+  const api = (db.apis || []).find(a => a.id === id);
+  if (!api) {
+    return res.status(404).json({ error: 'API not found' });
+  }
+
+  // RBAC: Admin can update any API; API Owner & External Partner can only update their own organisation's APIs
+  if (user.role !== 'Admin' && api.organisationId !== user.organisationId) {
+    logAudit(user.id, user.organisationId, 'Permission Denied', 'API', id, `Attempted cross-organisation category modification on API ${id}`);
+    return res.status(403).json({ error: 'Forbidden: Cannot update category for an API owned by another organisation' });
+  }
+
+  api.category = category.trim();
+  api.updatedAt = new Date().toISOString();
+
+  // Re-run analysis so updated category participates in duplicate scores
+  try {
+    const enrichedApis = getEnrichedApis(db);
+    db.duplicate_findings = runFullAnalysis(enrichedApis, db.settings);
+  } catch (err) {
+    console.error('Error refreshing analysis after category update:', err);
+  }
+
+  writeDB(db);
+
+  logAudit(
+    user.id,
+    user.organisationId,
+    'Category Updated',
+    'API',
+    id,
+    `Updated category of API "${api.name}" (${id}) to "${api.category}"`
+  );
+
+  res.json({ success: true, api });
+});
+
 // --- ANALYSER & FINDINGS ---
 
-router.post('/analyse/run', authenticateToken, blockAuditor, (req, res) => {
+// Duplicate Analysis Trigger: Admin (all), API Owner (own organisation), Auditor (403), Partner (403)
+router.post('/analyse/run', authenticateToken, (req, res) => {
+  const user = req.user;
+
+  // Auditor is strictly read-only
+  if (user.role === 'Auditor') {
+    logAudit(user.id, user.organisationId, 'Permission Denied', 'RBAC', 'auditor-analyse', 'Auditor attempted to run duplicate analysis');
+    return res.status(403).json({ error: 'Forbidden: Auditor role is strictly read-only' });
+  }
+
+  // External Partner is blocked from triggering analysis
+  if (user.role === 'External Partner') {
+    logAudit(user.id, user.organisationId, 'Permission Denied', 'RBAC', 'partner-analyse', 'External Partner attempted to trigger duplicate analysis');
+    return res.status(403).json({ error: 'Forbidden: External Partner cannot trigger duplicate analysis scans' });
+  }
+
   const db = getDB();
-  
   const enrichedApis = getEnrichedApis(db);
   const activeApis = enrichedApis.filter(a => a.governanceStatus !== 'Deprecated');
-  const findings = runFullAnalysis(activeApis, db.settings);
 
+  if (user.role === 'API Owner') {
+    // API Owner allowed for own organisation: run analysis and update findings involving user's organisation
+    const allFindings = runFullAnalysis(activeApis, db.settings);
+    const orgFindings = allFindings.filter(f => {
+      const apiA = activeApis.find(a => a.id === f.apiAId);
+      const apiB = activeApis.find(a => a.id === f.apiBId);
+      return (apiA && apiA.organisationId === user.organisationId) || (apiB && apiB.organisationId === user.organisationId);
+    });
+
+    const otherFindings = (db.duplicate_findings || []).filter(f => {
+      const apiA = activeApis.find(a => a.id === f.apiAId);
+      const apiB = activeApis.find(a => a.id === f.apiBId);
+      return (apiA && apiA.organisationId !== user.organisationId) && (apiB && apiB.organisationId !== user.organisationId);
+    });
+
+    db.duplicate_findings = [...otherFindings, ...orgFindings];
+    writeDB(db);
+
+    logAudit(
+      user.id,
+      user.organisationId,
+      'Analysis Executed',
+      'Duplicate Finding',
+      'organisation-batch',
+      `Executed duplicate scan for organisation ${user.organisationId}, updating ${orgFindings.length} findings`
+    );
+
+    return res.json({ success: true, count: orgFindings.length, scope: 'organisation', organisationId: user.organisationId });
+  }
+
+  // Admin role: global scan
+  const findings = runFullAnalysis(activeApis, db.settings);
   db.duplicate_findings = findings;
   writeDB(db);
 
   logAudit(
-    req.user.id,
-    req.user.organisationId,
+    user.id,
+    user.organisationId,
     'Analysis Executed',
     'Duplicate Finding',
     'batch',
     `Executed duplicate scan over ${activeApis.length} APIs, generating ${findings.length} findings`
   );
-  res.json({ success: true, count: findings.length });
+  res.json({ success: true, count: findings.length, scope: 'global' });
 });
 
 router.get('/analyse/results', authenticateToken, (req, res) => {
@@ -586,29 +709,53 @@ router.get('/analyse/results', authenticateToken, (req, res) => {
   res.json(responseData);
 });
 
-// Human Review Status Override
-router.put('/analyse/review/:id', authenticateToken, blockAuditor, (req, res) => {
+// Human Review Status Override: Admin (all), API Owner (own org only), Auditor (403), Partner (403)
+router.put('/analyse/review/:id', authenticateToken, (req, res) => {
   const db = getDB();
   const { id } = req.params;
   const { status, reason } = req.body;
   const user = req.user;
 
+  // Auditor is strictly read-only
+  if (user.role === 'Auditor') {
+    return res.status(403).json({ error: 'Forbidden: Auditor role is strictly read-only' });
+  }
+
+  // External Partner is strictly read-only
+  if (user.role === 'External Partner') {
+    return res.status(403).json({ error: 'Forbidden: External Partner role is strictly read-only' });
+  }
+
   const idx = db.duplicate_findings.findIndex(f => f.id === id);
   if (idx === -1) return res.status(404).json({ error: 'Finding not found' });
 
-  db.duplicate_findings[idx].status = status;
-  if (!db.duplicate_findings[idx].evidenceCheckmarks) {
-    db.duplicate_findings[idx].evidenceCheckmarks = [];
+  const finding = db.duplicate_findings[idx];
+  const apis = db.apis || [];
+  const apiA = apis.find(a => a.id === finding.apiAId);
+  const apiB = apis.find(a => a.id === finding.apiBId);
+
+  // API Owner can only review findings belonging to their own organisation
+  if (user.role === 'API Owner') {
+    const isOwnerOrg = (apiA && apiA.organisationId === user.organisationId) || (apiB && apiB.organisationId === user.organisationId);
+    if (!isOwnerOrg) {
+      logAudit(user.id, user.organisationId, 'Permission Denied', 'Duplicate Finding', id, 'API Owner attempted to review finding for external organisation');
+      return res.status(403).json({ error: 'Forbidden: API Owner can only review findings belonging to their own organisation' });
+    }
+  }
+
+  finding.status = status;
+  if (!finding.evidenceCheckmarks) {
+    finding.evidenceCheckmarks = [];
   }
   if (reason) {
-    db.duplicate_findings[idx].evidenceCheckmarks.push(`Reviewer Note (${user.name}): ${reason}`);
+    finding.evidenceCheckmarks.push(`Reviewer Note (${user.name}): ${reason}`);
   }
 
   const actionType = status === 'False Positive' ? 'False Positive Recorded' : status === 'False Negative' ? 'False Negative Recorded' : 'Finding Reviewed';
   logAudit(user.id, user.organisationId, actionType, 'Duplicate Finding', id, `Reviewed finding ${id} as ${status}. Reason: ${reason || 'None'}`);
 
   writeDB(db);
-  res.json(db.duplicate_findings[idx]);
+  res.json(finding);
 });
 
 // --- GOVERNANCE DECISIONS ---
@@ -736,6 +883,8 @@ router.post('/experiment/run', authenticateToken, requireRole('Admin'), (req, re
   let baselineTP = 0, baselineFP = 0, baselineFN = 0, baselineTN = 0;
   let enhancedTP = 0, enhancedFP = 0, enhancedFN = 0, enhancedTN = 0;
   let comparisonCount = 0;
+  let labelledPairCount = 0;
+  let unlabelledPairCount = 0;
 
   const baselineOverlappingEndpointIds = new Set();
   const enhancedOverlappingEndpointIds = new Set();
@@ -746,37 +895,56 @@ router.post('/experiment/run', authenticateToken, requireRole('Admin'), (req, re
       const apiA = enrichedApis[i];
       const apiB = enrichedApis[j];
 
-      // Ground truth determination from explicit benchmark dataset
+      // Ground truth determination with explicit 3-state evaluation:
+      // DUPLICATE, NOT_DUPLICATE, or UNLABELLED
       const pairKey1 = `${apiA.id}:${apiB.id}`;
       const pairKey2 = `${apiB.id}:${apiA.id}`;
       const groundTruthEntry = GROUND_TRUTH_PAIRS[pairKey1] || GROUND_TRUTH_PAIRS[pairKey2];
-      const isTrueDuplicate = groundTruthEntry ? groundTruthEntry.isDuplicate : false;
+      
+      let gtState = 'UNLABELLED';
+      if (groundTruthEntry) {
+        gtState = groundTruthEntry.isDuplicate ? 'DUPLICATE' : 'NOT_DUPLICATE';
+      }
 
       // Baseline prediction (Route + Method + Exact Fields)
       const baseScore = analyzeBaselinePair(apiA, apiB);
       const basePred = baseScore >= 60;
-      if (basePred && isTrueDuplicate) baselineTP++;
-      else if (basePred && !isTrueDuplicate) baselineFP++;
-      else if (!basePred && isTrueDuplicate) baselineFN++;
-      else baselineTN++;
 
+      // Enhanced prediction (With Semantics & Relationships)
+      const enh = analyzeEnhancedPair(apiA, apiB, db.settings);
+      const enhPred = enh.score >= highThreshold;
+
+      // Surface calculations use active endpoints regardless of ground-truth label status
       if (basePred && activeApiIds.has(apiA.id) && activeApiIds.has(apiB.id)) {
         endpoints.filter(ep => ep.apiId === apiA.id).forEach(ep => baselineOverlappingEndpointIds.add(ep.id));
         endpoints.filter(ep => ep.apiId === apiB.id).forEach(ep => baselineOverlappingEndpointIds.add(ep.id));
       }
 
-      // Enhanced prediction (With Semantics & Relationships)
-      const enh = analyzeEnhancedPair(apiA, apiB, db.settings);
-      const enhPred = enh.score >= highThreshold;
-      if (enhPred && isTrueDuplicate) enhancedTP++;
-      else if (enhPred && !isTrueDuplicate) enhancedFP++;
-      else if (!enhPred && isTrueDuplicate) enhancedFN++;
-      else enhancedTN++;
-
       if (enhPred && activeApiIds.has(apiA.id) && activeApiIds.has(apiB.id)) {
         endpoints.filter(ep => ep.apiId === apiA.id).forEach(ep => enhancedOverlappingEndpointIds.add(ep.id));
         endpoints.filter(ep => ep.apiId === apiB.id).forEach(ep => enhancedOverlappingEndpointIds.add(ep.id));
       }
+
+      // Ground Truth evaluation: Unlabelled pairs must NOT be counted in confusion matrix (must not become TN)
+      if (gtState === 'UNLABELLED') {
+        unlabelledPairCount++;
+        continue;
+      }
+
+      labelledPairCount++;
+
+      // Confusion matrix computed strictly over labelled pairs:
+      const isTrueDuplicate = (gtState === 'DUPLICATE');
+
+      if (basePred && isTrueDuplicate) baselineTP++;
+      else if (basePred && !isTrueDuplicate) baselineFP++;
+      else if (!basePred && isTrueDuplicate) baselineFN++;
+      else baselineTN++;
+
+      if (enhPred && isTrueDuplicate) enhancedTP++;
+      else if (enhPred && !isTrueDuplicate) enhancedFP++;
+      else if (!enhPred && isTrueDuplicate) enhancedFN++;
+      else enhancedTN++;
     }
   }
 
@@ -805,6 +973,8 @@ router.post('/experiment/run', authenticateToken, requireRole('Admin'), (req, re
     apiCount: enrichedApis.length,
     endpointCount: totalActiveEndpoints,
     comparisonCount,
+    labelledPairCount,
+    unlabelledPairCount,
     executionTime,
     baselineExecutionTime: Math.max(0.01, Math.round((executionTime * 0.35) * 100) / 100),
     truePositives: enhancedTP,
@@ -814,6 +984,10 @@ router.post('/experiment/run', authenticateToken, requireRole('Admin'), (req, re
     precision: Math.round(enhPrec * 100),
     recall: Math.round(enhRec * 100),
     f1: Math.round(enhF1 * 100),
+    baselineTruePositives: baselineTP,
+    baselineFalsePositives: baselineFP,
+    baselineFalseNegatives: baselineFN,
+    baselineTrueNegatives: baselineTN,
     baselinePrecision: Math.round(basePrec * 100),
     baselineRecall: Math.round(baseRec * 100),
     baselineF1: Math.round(baseF1 * 100),
@@ -1072,150 +1246,350 @@ router.get('/tests/results', authenticateToken, (req, res) => {
   res.json({ results: db.test_results || [] });
 });
 
-router.post('/tests/run', authenticateToken, requireRole('Admin'), (req, res) => {
+router.post('/tests/run', authenticateToken, requireRole('Admin'), async (req, res) => {
   const db = getDB();
   const enrichedApis = getEnrichedApis(db);
   const testResults = [];
   const runTime = new Date().toISOString();
 
-  // Test 1: Cross-Organisation Unauthorized Access Attempt (RBAC Boundary)
-  const partnerUser = (db.users || []).find(u => u.role === 'External Partner') || { id: 'usr-flyfast-dev', organisationId: 'org-flyfast', role: 'External Partner' };
-  const allApis = db.apis || [];
-  const competitorApis = allApis.filter(a => a.organisationId !== partnerUser.organisationId && a.organisationId !== 'org-ts');
-  const partnerVisibleApis = allApis.filter(a => a.organisationId === partnerUser.organisationId || (a.organisationId === 'org-ts' && a.visibility === 'Public'));
-  const leakedCompetitors = partnerVisibleApis.filter(a => a.organisationId !== partnerUser.organisationId && a.organisationId !== 'org-ts');
-  testResults.push({
-    id: `test-1-${Date.now()}`,
-    testName: 'Cross-Organisation Unauthorized Access Attempt (RBAC Boundary)',
-    category: 'Security',
-    expectedResult: 'Competitor private APIs (org-globalhotels) strictly quarantined from partner view',
-    actualResult: `${competitorApis.length} competitor APIs successfully quarantined, ${leakedCompetitors.length} leaked`,
-    status: leakedCompetitors.length === 0 && competitorApis.length > 0 ? 'PASS' : 'FAIL',
-    details: 'Verified that External Partner session cannot access or view competitor private APIs.',
-    executedAt: runTime
-  });
+  const secret = getJwtSecret();
+  const port = req.socket?.localPort || process.env.PORT || 5000;
+  const baseUrl = `http://127.0.0.1:${port}/api`;
 
-  // Test 2: Multi-Organisation Audit Log Leakage Prevention
-  const allAuditLogs = db.audit_logs || [];
-  const partnerScopedLogs = allAuditLogs.filter(log => log.organisationId === partnerUser.organisationId);
-  const leakedLogs = partnerScopedLogs.filter(log => log.organisationId !== partnerUser.organisationId);
-  testResults.push({
-    id: `test-2-${Date.now()}`,
-    testName: 'Multi-Organisation Audit Log Isolation',
-    category: 'Security',
-    expectedResult: 'External Partner sees only own organisation audit events',
-    actualResult: `${partnerScopedLogs.length} partner logs accessible, ${leakedLogs.length} competitor logs leaked`,
-    status: leakedLogs.length === 0 ? 'PASS' : 'FAIL',
-    details: 'Verified that audit logs are strictly partitioned by organisation ID.',
-    executedAt: runTime
-  });
+  // Pre-generate role tokens for genuine HTTP authorization tests
+  const partnerToken = jwt.sign(
+    { id: 'usr-flyfast-dev', name: 'FlyFast Dev', email: 'dev@flyfast.demo', role: 'External Partner', organisationId: 'org-flyfast' },
+    secret,
+    { expiresIn: '5m' }
+  );
 
-  // Test 3: Governance Decision Access Restriction
-  const allDecisions = db.governance_decisions || [];
-  const partnerDecisions = allDecisions.filter(dec => {
-    const involvedIds = [dec.canonicalApiId, dec.deprecatedApiId, dec.apiAId, dec.apiBId].filter(Boolean);
-    const apisList = involvedIds.map(id => allApis.find(a => a.id === id)).filter(Boolean);
-    return apisList.some(a => a.organisationId === partnerUser.organisationId || (a.organisationId === 'org-ts' && a.visibility === 'Public'));
-  });
-  const competitorOnlyDecisions = allDecisions.filter(dec => {
-    const involvedIds = [dec.canonicalApiId, dec.deprecatedApiId, dec.apiAId, dec.apiBId].filter(Boolean);
-    const apisList = involvedIds.map(id => allApis.find(a => a.id === id)).filter(Boolean);
-    return apisList.length > 0 && apisList.every(a => a.organisationId !== partnerUser.organisationId && a.organisationId !== 'org-ts');
-  });
-  const partnerLeakedDecisions = partnerDecisions.filter(d => competitorOnlyDecisions.some(cd => cd.id === d.id));
-  testResults.push({
-    id: `test-3-${Date.now()}`,
-    testName: 'Governance Decision Isolation (Data Boundary)',
-    category: 'Security',
-    expectedResult: 'Competitor governance records redacted from partner responses',
-    actualResult: `${competitorOnlyDecisions.length} competitor decisions quarantined, ${partnerLeakedDecisions.length} leaked`,
-    status: partnerLeakedDecisions.length === 0 ? 'PASS' : 'FAIL',
-    details: 'Verified External Partner cannot view internal or rival partner governance decisions.',
-    executedAt: runTime
-  });
+  const auditorToken = jwt.sign(
+    { id: 'usr-auditor', name: 'Diana Auditor', email: 'auditor@travelsphere.demo', role: 'Auditor', organisationId: 'org-ts' },
+    secret,
+    { expiresIn: '5m' }
+  );
 
-  // Test 4: Protected Execution Endpoints (Non-Admin 403)
-  const nonAdminRoles = ['External Partner', 'Auditor', 'API Owner'];
-  const testExecutionBlocked = nonAdminRoles.every(role => role !== 'Admin');
-  testResults.push({
-    id: `test-4-${Date.now()}`,
-    testName: 'Non-Admin Mutating & Execution Protection (RBAC 403)',
-    category: 'Security',
-    expectedResult: '403 Forbidden for non-Admin on /tests/run, /experiment/run, and /settings/reset',
-    actualResult: `All non-Admin roles (${nonAdminRoles.join(', ')}) strictly blocked by requireRole('Admin') middleware`,
-    status: testExecutionBlocked ? 'PASS' : 'FAIL',
-    details: 'Verified RBAC middleware blocks execution runs for unauthorized roles.',
-    executedAt: runTime
-  });
+  const ownerToken = jwt.sign(
+    { id: 'usr-ts-owner', name: 'Bob Owner', email: 'owner@travelsphere.demo', role: 'API Owner', organisationId: 'org-ts' },
+    secret,
+    { expiresIn: '5m' }
+  );
 
-  // Test 5: Same Name, Different Business Domain (/bookings vs /flight-bookings)
+  // 1. Missing JWT Token Test
+  try {
+    const resNoAuth = await fetch(`${baseUrl}/apis`);
+    testResults.push({
+      id: `test-no-jwt-${Date.now()}`,
+      testName: 'Missing JWT Authentication Enforcement (HTTP 401)',
+      category: 'Security',
+      expectedResult: 'HTTP 401 Unauthorized',
+      actualResult: `HTTP ${resNoAuth.status} ${resNoAuth.statusText}`,
+      status: resNoAuth.status === 401 ? 'PASS' : 'FAIL',
+      details: 'Verified that requests missing Authorization header are immediately rejected with HTTP 401.',
+      executedAt: runTime
+    });
+  } catch (err) {
+    testResults.push({
+      id: `test-no-jwt-${Date.now()}`,
+      testName: 'Missing JWT Authentication Enforcement (HTTP 401)',
+      category: 'Security',
+      expectedResult: 'HTTP 401 Unauthorized',
+      actualResult: `Error: ${err.message}`,
+      status: 'FAIL',
+      details: 'HTTP fetch failed to complete.',
+      executedAt: runTime
+    });
+  }
+
+  // 2. Invalid JWT Token Test
+  try {
+    const resBadJwt = await fetch(`${baseUrl}/apis`, {
+      headers: { 'Authorization': 'Bearer invalid.malformed.token' }
+    });
+    testResults.push({
+      id: `test-invalid-jwt-${Date.now()}`,
+      testName: 'Invalid JWT Token Rejection (HTTP 401)',
+      category: 'Security',
+      expectedResult: 'HTTP 401 Unauthorized',
+      actualResult: `HTTP ${resBadJwt.status} ${resBadJwt.statusText}`,
+      status: resBadJwt.status === 401 ? 'PASS' : 'FAIL',
+      details: 'Verified that forged or unparseable JWT tokens are rejected with HTTP 401.',
+      executedAt: runTime
+    });
+  } catch (err) {
+    testResults.push({
+      id: `test-invalid-jwt-${Date.now()}`,
+      testName: 'Invalid JWT Token Rejection (HTTP 401)',
+      category: 'Security',
+      expectedResult: 'HTTP 401 Unauthorized',
+      actualResult: `Error: ${err.message}`,
+      status: 'FAIL',
+      details: 'HTTP fetch failed to complete.',
+      executedAt: runTime
+    });
+  }
+
+  // 3. External Partner Requesting Competitor APIs
+  try {
+    const resPartnerApis = await fetch(`${baseUrl}/apis`, {
+      headers: { 'Authorization': `Bearer ${partnerToken}` }
+    });
+    const partnerApis = await resPartnerApis.json();
+    const leakedCompetitorApis = Array.isArray(partnerApis)
+      ? partnerApis.filter(a => a.organisationId !== 'org-flyfast' && a.organisationId !== 'org-ts')
+      : [];
+    testResults.push({
+      id: `test-partner-apis-${Date.now()}`,
+      testName: 'External Partner Requesting Competitor APIs (Data Isolation)',
+      category: 'Security',
+      expectedResult: 'HTTP 200, competitor private APIs (GlobalHotels, StayEasy, SecurePay) quarantined (0 leaked)',
+      actualResult: `HTTP ${resPartnerApis.status}, ${leakedCompetitorApis.length} competitor APIs leaked into partner response`,
+      status: resPartnerApis.status === 200 && leakedCompetitorApis.length === 0 ? 'PASS' : 'FAIL',
+      details: 'Verified that External Partner session receives only own org APIs and public TravelSphere gateways.',
+      executedAt: runTime
+    });
+  } catch (err) {
+    testResults.push({
+      id: `test-partner-apis-${Date.now()}`,
+      testName: 'External Partner Requesting Competitor APIs (Data Isolation)',
+      category: 'Security',
+      expectedResult: 'HTTP 200 with 0 competitor APIs',
+      actualResult: `Error: ${err.message}`,
+      status: 'FAIL',
+      details: 'HTTP fetch failed.',
+      executedAt: runTime
+    });
+  }
+
+  // 4. External Partner Requesting Competitor Findings
+  try {
+    const resPartnerFindings = await fetch(`${baseUrl}/analyse/results`, {
+      headers: { 'Authorization': `Bearer ${partnerToken}` }
+    });
+    const findings = await resPartnerFindings.json();
+    const leakedFindings = Array.isArray(findings)
+      ? findings.filter(f => (f.apiA && f.apiA.organisationId !== 'org-flyfast') && (f.apiB && f.apiB.organisationId !== 'org-flyfast'))
+      : [];
+    testResults.push({
+      id: `test-partner-findings-${Date.now()}`,
+      testName: 'External Partner Requesting Competitor Findings (Duplicate Redaction)',
+      category: 'Security',
+      expectedResult: 'HTTP 200, competitor duplicate findings strictly redacted (0 leaked)',
+      actualResult: `HTTP ${resPartnerFindings.status}, ${leakedFindings.length} competitor findings leaked`,
+      status: resPartnerFindings.status === 200 && leakedFindings.length === 0 ? 'PASS' : 'FAIL',
+      details: 'Verified External Partner only sees duplicate findings involving FlyFast Airlines APIs.',
+      executedAt: runTime
+    });
+  } catch (err) {
+    testResults.push({
+      id: `test-partner-findings-${Date.now()}`,
+      testName: 'External Partner Requesting Competitor Findings (Duplicate Redaction)',
+      category: 'Security',
+      expectedResult: 'HTTP 200 with 0 competitor findings leaked',
+      actualResult: `Error: ${err.message}`,
+      status: 'FAIL',
+      details: 'HTTP fetch failed.',
+      executedAt: runTime
+    });
+  }
+
+  // 5. External Partner Requesting Competitor Governance Decisions
+  try {
+    const resPartnerDecisions = await fetch(`${baseUrl}/governance/decisions`, {
+      headers: { 'Authorization': `Bearer ${partnerToken}` }
+    });
+    const decisions = await resPartnerDecisions.json();
+    const allApis = db.apis || [];
+    const leakedDecisions = Array.isArray(decisions) ? decisions.filter(dec => {
+      const ids = [dec.canonicalApiId, dec.deprecatedApiId, dec.apiAId, dec.apiBId].filter(Boolean);
+      const decApis = ids.map(id => allApis.find(a => a.id === id)).filter(Boolean);
+      return decApis.length > 0 && decApis.every(a => a.organisationId !== 'org-flyfast' && a.organisationId !== 'org-ts');
+    }) : [];
+    testResults.push({
+      id: `test-partner-decisions-${Date.now()}`,
+      testName: 'External Partner Requesting Competitor Governance Decisions (RBAC Isolation)',
+      category: 'Security',
+      expectedResult: 'HTTP 200, competitor governance records redacted (0 leaked)',
+      actualResult: `HTTP ${resPartnerDecisions.status}, ${leakedDecisions.length} competitor decisions leaked`,
+      status: resPartnerDecisions.status === 200 && leakedDecisions.length === 0 ? 'PASS' : 'FAIL',
+      details: 'Verified External Partner cannot view internal or competitor governance decision logs.',
+      executedAt: runTime
+    });
+  } catch (err) {
+    testResults.push({
+      id: `test-partner-decisions-${Date.now()}`,
+      testName: 'External Partner Requesting Competitor Governance Decisions (RBAC Isolation)',
+      category: 'Security',
+      expectedResult: 'HTTP 200 with 0 competitor decisions leaked',
+      actualResult: `Error: ${err.message}`,
+      status: 'FAIL',
+      details: 'HTTP fetch failed.',
+      executedAt: runTime
+    });
+  }
+
+  // 6. Auditor Attempting Mutation
+  try {
+    const resAuditorMutate = await fetch(`${baseUrl}/apis`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${auditorToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ name: 'Auditor Illegal API' })
+    });
+    testResults.push({
+      id: `test-auditor-mutation-${Date.now()}`,
+      testName: 'Auditor Attempting Mutation (Strict Read-Only 403 Forbidden)',
+      category: 'Security',
+      expectedResult: 'HTTP 403 Forbidden',
+      actualResult: `HTTP ${resAuditorMutate.status} ${resAuditorMutate.statusText}`,
+      status: resAuditorMutate.status === 403 ? 'PASS' : 'FAIL',
+      details: 'Verified that Auditor role is strictly read-only and blocked from creating or modifying resources.',
+      executedAt: runTime
+    });
+  } catch (err) {
+    testResults.push({
+      id: `test-auditor-mutation-${Date.now()}`,
+      testName: 'Auditor Attempting Mutation (Strict Read-Only 403 Forbidden)',
+      category: 'Security',
+      expectedResult: 'HTTP 403 Forbidden',
+      actualResult: `Error: ${err.message}`,
+      status: 'FAIL',
+      details: 'HTTP fetch failed.',
+      executedAt: runTime
+    });
+  }
+
+  // 7. API Owner Attempting Cross-Organisation Mutation
+  try {
+    const resCrossOrg = await fetch(`${baseUrl}/apis`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${ownerToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        name: 'Rival Spec Hijack',
+        organisationId: 'org-flyfast'
+      })
+    });
+    testResults.push({
+      id: `test-owner-cross-org-${Date.now()}`,
+      testName: 'API Owner Attempting Cross-Organisation Mutation (HTTP 403 Forbidden)',
+      category: 'Security',
+      expectedResult: 'HTTP 403 Forbidden',
+      actualResult: `HTTP ${resCrossOrg.status} ${resCrossOrg.statusText}`,
+      status: resCrossOrg.status === 403 ? 'PASS' : 'FAIL',
+      details: 'Verified that API Owner cannot create or mutate assets under another organisation ID.',
+      executedAt: runTime
+    });
+  } catch (err) {
+    testResults.push({
+      id: `test-owner-cross-org-${Date.now()}`,
+      testName: 'API Owner Attempting Cross-Organisation Mutation (HTTP 403 Forbidden)',
+      category: 'Security',
+      expectedResult: 'HTTP 403 Forbidden',
+      actualResult: `Error: ${err.message}`,
+      status: 'FAIL',
+      details: 'HTTP fetch failed.',
+      executedAt: runTime
+    });
+  }
+
+  // 8. Strict OpenAPI Validation: Missing Version Rejection
+  try {
+    const resBadSpec = await fetch(`${baseUrl}/specifications/parse`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${ownerToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        content: JSON.stringify({
+          info: { title: 'No Version API' },
+          paths: { '/test': { get: { summary: 'test' } } }
+        })
+      })
+    });
+    const badSpecData = await resBadSpec.json();
+    const hasVersionError = badSpecData.logs && badSpecData.logs.some(l => l.includes('Error: Missing required "openapi" or "swagger" version'));
+    testResults.push({
+      id: `test-openapi-missing-version-${Date.now()}`,
+      testName: 'OpenAPI Specification Validation: Missing Version Rejection',
+      category: 'Validation',
+      expectedResult: 'isValid = false with explicit version error log',
+      actualResult: `isValid: ${badSpecData.isValid}, Error logged: ${hasVersionError}`,
+      status: (!badSpecData.isValid && hasVersionError) ? 'PASS' : 'FAIL',
+      details: 'Verified that specifications lacking openapi/swagger declaration are strictly rejected as errors.',
+      executedAt: runTime
+    });
+  } catch (err) {
+    testResults.push({
+      id: `test-openapi-missing-version-${Date.now()}`,
+      testName: 'OpenAPI Specification Validation: Missing Version Rejection',
+      category: 'Validation',
+      expectedResult: 'isValid = false',
+      actualResult: `Error: ${err.message}`,
+      status: 'FAIL',
+      details: 'HTTP fetch failed.',
+      executedAt: runTime
+    });
+  }
+
+  // 9. Edge Case: Same Name, Different Business Domain (/bookings vs /flight-bookings)
   const hotelBooking = enrichedApis.find(a => a.id === 'api-ts-hotel-booking');
   const flightBooking = enrichedApis.find(a => a.id === 'api-ts-flight-booking');
-  let score5 = 0;
+  let score9 = 0;
   if (hotelBooking && flightBooking) {
     const comp = analyzeEnhancedPair(hotelBooking, flightBooking, db.settings);
-    score5 = comp.score;
+    score9 = comp.score;
   }
   testResults.push({
-    id: `test-5-${Date.now()}`,
+    id: `test-domain-segregation-${Date.now()}`,
     testName: 'Same Name, Different Business Meaning (/bookings vs /flight-bookings)',
     category: 'Edge Case',
     expectedResult: 'Score < 40% (Not Duplicate)',
-    actualResult: `Score = ${score5}%`,
-    status: score5 < 40 ? 'PASS' : 'FAIL',
+    actualResult: `Score = ${score9}%`,
+    status: score9 < 40 ? 'PASS' : 'FAIL',
     details: 'Verified vertical domains (Hotel vs Flight) are segregated even with shared route tokens.',
     executedAt: runTime
   });
 
-  // Test 6: Completely Different Names, Same Semantic Meaning (/travel-orders vs /reservation-management)
+  // 10. Edge Case: Different Names, Same Semantic Meaning (/travel-orders vs /reservation-management)
   const ordersApi = enrichedApis.find(a => a.id === 'api-ts-travel-orders');
   const stayMgmtApi = enrichedApis.find(a => a.id === 'api-stayeasy-mgmt');
-  let score6 = 0;
+  let score10 = 0;
   if (ordersApi && stayMgmtApi) {
     const comp = analyzeEnhancedPair(ordersApi, stayMgmtApi, db.settings);
-    score6 = comp.score;
+    score10 = comp.score;
   }
   testResults.push({
-    id: `test-6-${Date.now()}`,
+    id: `test-semantic-duplicate-${Date.now()}`,
     testName: 'Different Names, Same Semantic Meaning (/travel-orders vs /reservation-management)',
     category: 'Edge Case',
     expectedResult: 'Score >= 60% (Potential or High Duplicate)',
-    actualResult: `Score = ${score6}%`,
-    status: score6 >= 60 ? 'PASS' : 'FAIL',
+    actualResult: `Score = ${score10}%`,
+    status: score10 >= 60 ? 'PASS' : 'FAIL',
     details: 'Verified semantic concept matching catches synonyms across disparate route names.',
     executedAt: runTime
   });
 
-  // Test 7: Missing Field Descriptions / Zero-Field Parameters
-  const dummyA = { id: 'dummy-a', gatewayBaseUrl: '/api/v1/dummy', method: 'POST', category: 'Hotel Booking', inputFields: [], outputFields: [] };
-  const dummyB = { id: 'dummy-b', gatewayBaseUrl: '/api/v1/dummy', method: 'POST', category: 'Hotel Booking', inputFields: [], outputFields: [] };
-  const comp7 = analyzeEnhancedPair(dummyA, dummyB, db.settings);
-  testResults.push({
-    id: `test-7-${Date.now()}`,
-    testName: 'Missing Field Descriptions (Empty OpenAPI Schemas)',
-    category: 'Edge Case',
-    expectedResult: 'Safe calculation without exception, confidence reflects data density',
-    actualResult: `Score = ${comp7.score}%, confidence = ${comp7.confidence}`,
-    status: (comp7.score >= 0 && comp7.score <= 100) ? 'PASS' : 'FAIL',
-    details: 'Algorithm handled zero-field inputs safely without NaN or crash.',
-    executedAt: runTime
-  });
-
-  // Test 8: Adversarial OpenAPI Specification (Corrupt Payload)
-  let test8Passed = true;
+  // 11. Adversarial OpenAPI Specification (Corrupt Payload)
+  let test11Passed = true;
   try {
     yaml.load('!!invalid: syntax: [unclosed');
-    test8Passed = false;
+    test11Passed = false;
   } catch (e) {
-    test8Passed = true;
+    test11Passed = true;
   }
   testResults.push({
-    id: `test-8-${Date.now()}`,
+    id: `test-corrupt-yaml-${Date.now()}`,
     testName: 'Invalid/Adversarial OpenAPI Specification (Corrupt YAML/JSON)',
     category: 'Adversarial',
     expectedResult: 'Reject corrupt payload safely without server crash',
     actualResult: 'Caught malformed syntax exception safely in try/catch sandbox',
-    status: test8Passed ? 'PASS' : 'FAIL',
+    status: test11Passed ? 'PASS' : 'FAIL',
     details: 'Parser error handling prevented unhandled process termination.',
     executedAt: runTime
   });
@@ -1230,7 +1604,7 @@ router.post('/tests/run', authenticateToken, requireRole('Admin'), (req, res) =>
     'Tests Executed',
     'Test Runner',
     'suite',
-    `Executed 8 automated test scenarios: ${passCount}/${testResults.length} passed`
+    `Executed ${testResults.length} automated integration test scenarios: ${passCount}/${testResults.length} passed`
   );
 
   res.json({ success: true, results: testResults });

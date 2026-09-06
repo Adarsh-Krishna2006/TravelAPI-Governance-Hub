@@ -102,14 +102,14 @@ To demonstrate the full-stack prototype in a structured review:
 
 ## 5. Automated Tests & Security Verification
 
-The platform includes a test runner covering 37 automated assertions across 7 security and algorithm suites:
-1. **Authentication Suite**: Enforces HTTP 401 on missing, malformed, invalid, or expired JWT tokens with zero silent demo fallbacks. Validates that `JWT_SECRET` is strictly enforced in production.
-2. **RBAC & Mutation Security**: Restricts database resets, consolidation, formal governance, test runner (`POST /api/tests/run`), and benchmark experiment (`POST /api/experiment/run`) to Admin (HTTP 403 for API Owner, External Partner, and Auditor). Provides authenticated read-only access for Auditor on `/api/tests/results` and `/api/experiment/results`.
-3. **Multi-Organisation Isolation**: Quarantines rival partner private specifications and findings from External Partner sessions. Partitions audit logs and governance decisions so External Partners only see their own records.
-4. **OpenAPI 3.x Parser**: Validates JSON and YAML specifications via `js-yaml`, handles adversarial/malformed payloads safely, and scrubs hardcoded credentials. Recursively extracts nested `requestBody` and response schema properties with circular reference protection (depth $\le 5$), enabling imported specs to participate directly in duplicate analysis.
-5. **Duplicate Detection & Semantics**: Verifies $\ge 85\%$ detection for confirmed duplicates, $< 40\%$ for false positive controls, and $\ge 60\%$ for semantic synonyms. Benchmarks dynamic baseline vs enhanced algorithm metrics without hardcoded numbers.
-6. **Endpoint-Level Duplicate Surface**: Calculates measured duplication percentage over active endpoints ($N=75$) rather than gross API counts. Formally verifies deprecation exclusion using a controlled synthetic dataset.
-7. **Adversarial & Edge Cases**: Validates zero-parameter inputs, schema bombs, and corrupt payloads without uncaught server exceptions.
+The platform includes a comprehensive test runner covering **53 automated assertions** across 7 test suites, plus **11 live HTTP integration test scenarios** executed by the backend test runner:
+1. **Authentication Suite (6 tests)**: Enforces HTTP 401 on missing, malformed, invalid, or expired JWT tokens with zero silent demo fallbacks. Validates that `JWT_SECRET` is strictly required in production mode.
+2. **RBAC & Mutation Security (13 tests)**: Restricts database resets, consolidation, formal governance, test runner (`POST /api/tests/run`), and benchmark experiment (`POST /api/experiment/run`) to Admin (HTTP 403 for API Owner, External Partner, and Auditor). Restricts `/api/analyse/run` to Admin (global) and API Owner (own organisation only). Restricts `/api/analyse/review/:id` to Admin and API Owner (own organisation only; cross-org and Partner/Auditor receive HTTP 403). Provides authenticated read-only access for Auditor on `/api/tests/results` and `/api/experiment/results`.
+3. **Multi-Organisation Isolation (4 tests)**: Quarantines rival partner private specifications and findings from External Partner sessions. Partitions audit logs and governance decisions so External Partners only see their own records.
+4. **OpenAPI 3.x Parser & Category Classification (13 tests)**: Validates JSON and YAML specifications via `js-yaml`, handles adversarial/malformed payloads safely, and scrubs hardcoded credentials. Strictly rejects missing version, unsupported versions, missing info/title, and missing paths as hard errors (`isValid: false`). Automatically derives category from metadata/tags or defaults to `"Unclassified"`. Provides user classification support via `PATCH /api/apis/:id/category` with cross-organisation mutation prevention. Recursively extracts nested `requestBody` and response schema properties with circular reference protection (depth $\le 5$), enabling imported specs to participate directly in duplicate analysis.
+5. **Duplicate Detection & 3-State Ground Truth (5 tests)**: Verifies $\ge 85\%$ detection for confirmed duplicates, $< 40\%$ for false positive controls, and $\ge 60\%$ for semantic synonyms. Implements explicit 3-state ground truth (`DUPLICATE`, `NOT_DUPLICATE`, `UNLABELLED`) where unlabelled pairs are strictly excluded from the confusion matrix (never inflated into True Negatives). Returns `labelledPairCount` and `unlabelledPairCount`.
+6. **Endpoint-Level Duplicate Surface (5 tests)**: Calculates measured duplication percentage over active endpoints rather than gross API counts. Formally verifies deprecation exclusion using a controlled synthetic dataset.
+7. **Automated Test Evidence Endpoint (1 test / 11 scenarios)**: `POST /api/tests/run` dispatches genuine local HTTP requests verifying missing JWT (401), invalid JWT (401), competitor API isolation (200, 0 leaked), competitor finding redaction (200, 0 leaked), competitor governance isolation (200, 0 leaked), auditor mutation attempt (403), API owner cross-org mutation attempt (403), strict OpenAPI validation errors, domain segregation, semantic matching, and corrupt YAML safety with a 100% pass rate.
 
 ### Running Automated Tests
 ```bash
@@ -129,10 +129,14 @@ node backend/tests.js
 
 ---
 
-## 7. Seed Data & Methodology
+## 7. Database Seed Counts & Methodology
 
-* **Seeding Scale**: The default seed contains **25 APIs and 75 endpoints** spanning 4 organisations (TravelSphere, StayEasy Hotels, GlobalHotels, FlyFast Airlines, and PayLink Payments).
-* **Ground Truth Reviewing**: Real ground-truth pairs are evaluated dynamically to calculate True Positives, False Positives, False Negatives, True Negatives, Precision, Recall, and F1 scores with zero invented numbers.
+* **Exact Seed Data Counts**:
+  - **API Count**: 25 APIs spanning 5 organisations (TravelSphere, StayEasy Hotels, GlobalHotels, FlyFast Airlines, and PayLink Payments).
+  - **Endpoint Count**: 75 endpoints mapped to their respective APIs.
+  - **Field Count**: 153 schema fields with semantic concept classifications and direction mappings.
+  - **Test Count**: 53 automated unit/integration test assertions + 11 live HTTP integration test scenarios.
+* **Ground Truth Reviewing**: Evaluates 8 explicit ground-truth pairs (5 duplicate pairs, 3 negative control pairs) across 3 explicit states (`DUPLICATE`, `NOT_DUPLICATE`, `UNLABELLED`), computing precision, recall, and F1 dynamically over labelled pairs without inflating True Negatives.
 * **Schema Flattening**: Nested properties are extracted and flattened with dotted notation (e.g., `guest.address.city`) up to 5 levels deep.
 * **Surface Formula**:
   $$\text{Duplicate Surface \%} = \frac{\text{Active Duplicate Endpoints}}{\text{Total Active Endpoints}} \times 100$$

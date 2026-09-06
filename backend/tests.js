@@ -220,6 +220,73 @@ async function runTests() {
   });
   logTest('Allow Auditor read-only access to GET /api/experiment/results (200 OK)', resAuditorExpResults.status === 200);
 
+  // 2.10: POST /api/analyse/run permissions
+  const resPartnerAnalyse = await fetch(`${baseUrl}/analyse/run`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${partnerToken}` }
+  });
+  logTest('Block External Partner from POST /api/analyse/run (403 Forbidden)', resPartnerAnalyse.status === 403, `Status: ${resPartnerAnalyse.status}`);
+
+  const resAuditorAnalyse = await fetch(`${baseUrl}/analyse/run`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${auditorToken}` }
+  });
+  logTest('Block Auditor from POST /api/analyse/run (403 Forbidden)', resAuditorAnalyse.status === 403, `Status: ${resAuditorAnalyse.status}`);
+
+  const resOwnerAnalyse = await fetch(`${baseUrl}/analyse/run`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${ownerToken}` }
+  });
+  const ownerAnalyseData = await resOwnerAnalyse.json();
+  logTest('Permit API Owner to run organisation-scoped duplicate scan (200 OK)', resOwnerAnalyse.status === 200 && ownerAnalyseData.scope === 'organisation', `Scope: ${ownerAnalyseData.scope}`);
+
+  const resAdminAnalyse = await fetch(`${baseUrl}/analyse/run`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${adminToken}` }
+  });
+  const adminAnalyseData = await resAdminAnalyse.json();
+  logTest('Permit Admin to run global duplicate scan (200 OK)', resAdminAnalyse.status === 200 && adminAnalyseData.scope === 'global', `Scope: ${adminAnalyseData.scope}`);
+
+  // 2.11: PUT /api/analyse/review/:id permissions
+  const currentFindingsRes = await fetch(`${baseUrl}/analyse/results`, {
+    headers: { 'Authorization': `Bearer ${adminToken}` }
+  });
+  const currentFindings = await currentFindingsRes.json();
+  const ownerFinding = currentFindings.find(f => (f.apiA && f.apiA.organisationId === 'org-ts') || (f.apiB && f.apiB.organisationId === 'org-ts'));
+  const competitorFinding = currentFindings.find(f => (f.apiA && f.apiA.organisationId !== 'org-ts') && (f.apiB && f.apiB.organisationId !== 'org-ts'));
+
+  const resAuditorReview = await fetch(`${baseUrl}/analyse/review/${ownerFinding ? ownerFinding.id : 'any'}`, {
+    method: 'PUT',
+    headers: { 'Authorization': `Bearer ${auditorToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: 'False Positive', reason: 'Auditor attempt' })
+  });
+  logTest('Block Auditor from PUT /api/analyse/review/:id (403 Forbidden)', resAuditorReview.status === 403, `Status: ${resAuditorReview.status}`);
+
+  const resPartnerReview = await fetch(`${baseUrl}/analyse/review/${ownerFinding ? ownerFinding.id : 'any'}`, {
+    method: 'PUT',
+    headers: { 'Authorization': `Bearer ${partnerToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: 'False Positive', reason: 'Partner attempt' })
+  });
+  logTest('Block External Partner from PUT /api/analyse/review/:id (403 Forbidden)', resPartnerReview.status === 403, `Status: ${resPartnerReview.status}`);
+
+  if (competitorFinding) {
+    const resOwnerCrossReview = await fetch(`${baseUrl}/analyse/review/${competitorFinding.id}`, {
+      method: 'PUT',
+      headers: { 'Authorization': `Bearer ${ownerToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'False Positive', reason: 'Cross-org attempt' })
+    });
+    logTest('Block API Owner from reviewing competitor finding (403 Forbidden)', resOwnerCrossReview.status === 403, `Status: ${resOwnerCrossReview.status}`);
+  }
+
+  if (ownerFinding) {
+    const resOwnerReview = await fetch(`${baseUrl}/analyse/review/${ownerFinding.id}`, {
+      method: 'PUT',
+      headers: { 'Authorization': `Bearer ${ownerToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'Needs Review', reason: 'Own org review' })
+    });
+    logTest('Permit API Owner to review own organisation finding (200 OK)', resOwnerReview.status === 200, `Status: ${resOwnerReview.status}`);
+  }
+
   // ----------------------------------------------------
   // SUITE 3: ORGANISATION ISOLATION
   // ----------------------------------------------------
@@ -460,6 +527,96 @@ paths:
   }
   logTest('Imported OpenAPI specs participate in duplicate analysis with score >= 75%', importDuplicateScore >= 75, `Score: ${importDuplicateScore}%`);
 
+  // 4.6: OpenAPI Validation: Missing Version Rejection as Error
+  const specNoVersion = JSON.stringify({
+    info: { title: 'No Version API' },
+    paths: { '/test': { get: { summary: 'test' } } }
+  });
+  const resNoVer = await fetch(`${baseUrl}/specifications/parse`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: specNoVersion, format: 'JSON' })
+  });
+  const noVerData = await resNoVer.json();
+  const hasVerErr = noVerData.logs && noVerData.logs.some(l => l.includes('Error: Missing required "openapi" or "swagger" version'));
+  logTest('OpenAPI Validator strictly rejects missing version as ERROR', !noVerData.isValid && hasVerErr);
+
+  // 4.7: OpenAPI Validation: Unsupported Version Rejection as Error
+  const specBadVer = JSON.stringify({
+    openapi: '4.0.0',
+    info: { title: 'Unsupported Version API' },
+    paths: { '/test': { get: { summary: 'test' } } }
+  });
+  const resBadVer = await fetch(`${baseUrl}/specifications/parse`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: specBadVer, format: 'JSON' })
+  });
+  const badVerData = await resBadVer.json();
+  const hasBadVerErr = badVerData.logs && badVerData.logs.some(l => l.includes('Error: Unsupported OpenAPI/Swagger version'));
+  logTest('OpenAPI Validator strictly rejects unsupported version as ERROR', !badVerData.isValid && hasBadVerErr);
+
+  // 4.8: OpenAPI Validation: Missing Info & Title Rejection as Error
+  const specNoTitle = JSON.stringify({
+    openapi: '3.0.0',
+    paths: { '/test': { get: { summary: 'test' } } }
+  });
+  const resNoTitle = await fetch(`${baseUrl}/specifications/parse`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: specNoTitle, format: 'JSON' })
+  });
+  const noTitleData = await resNoTitle.json();
+  logTest('OpenAPI Validator strictly rejects missing info/title as ERROR', !noTitleData.isValid);
+
+  // 4.9: OpenAPI Validation: Missing Paths Rejection as Error
+  const specNoPaths = JSON.stringify({
+    openapi: '3.0.0',
+    info: { title: 'No Paths API' }
+  });
+  const resNoPaths = await fetch(`${baseUrl}/specifications/parse`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: specNoPaths, format: 'JSON' })
+  });
+  const noPathsData = await resNoPaths.json();
+  logTest('OpenAPI Validator strictly rejects missing paths as ERROR', !noPathsData.isValid);
+
+  // 4.10: Imported API without category defaults to "Unclassified"
+  const specUnclassified = JSON.stringify({
+    openapi: '3.0.0',
+    info: { title: 'Uncategorised Custom Service', version: '1.0.0' },
+    paths: { '/custom': { get: { summary: 'Custom' } } }
+  });
+  const resImportUnclass = await fetch(`${baseUrl}/specifications/parse`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: specUnclassified, format: 'JSON', importIntoCatalogue: true })
+  });
+  await resImportUnclass.json();
+  const dbAfterUnclass = readDB();
+  const unclassApi = dbAfterUnclass.apis.find(a => a.name === 'Uncategorised Custom Service');
+  logTest('Imported API without category defaults to "Unclassified"', unclassApi && unclassApi.category === 'Unclassified', `Category: ${unclassApi?.category}`);
+
+  // 4.11: User Classification Support: PATCH /api/apis/:id/category
+  if (unclassApi) {
+    const resPatchCat = await fetch(`${baseUrl}/apis/${unclassApi.id}/category`, {
+      method: 'PATCH',
+      headers: { 'Authorization': `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category: 'Hotel Booking' })
+    });
+    const patchData = await resPatchCat.json();
+    logTest('User classification support via PATCH /api/apis/:id/category', resPatchCat.status === 200 && patchData.api.category === 'Hotel Booking', `Updated: ${patchData.api?.category}`);
+
+    // Non-admin cross-organisation category modification blocked
+    const resPartnerPatch = await fetch(`${baseUrl}/apis/${unclassApi.id}/category`, {
+      method: 'PATCH',
+      headers: { 'Authorization': `Bearer ${partnerToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category: 'Airline Services' })
+    });
+    logTest('Block cross-organisation category modification (403 Forbidden)', resPartnerPatch.status === 403, `Status: ${resPartnerPatch.status}`);
+  }
+
   // ----------------------------------------------------
   // SUITE 5: DUPLICATE DETECTION ALGORITHM & EXPERIMENT
   // ----------------------------------------------------
@@ -492,6 +649,10 @@ paths:
   });
   const expData = await resExp.json();
   logTest('Run Baseline vs Enhanced Experiment dynamically without hardcoded values', expData.comparisonCount > 0 && expData.f1 > 0, `Enhanced F1: ${expData.f1}%, Comparisons: ${expData.comparisonCount}`);
+
+  // 5.5: 3-State Ground Truth Verification
+  const valid3State = expData.labelledPairCount === 8 && expData.unlabelledPairCount > 0 && expData.trueNegatives <= 8;
+  logTest('Ground Truth 3-State Overhaul: Unlabelled pairs must NOT become True Negatives', valid3State, `Labelled: ${expData.labelledPairCount}, Unlabelled: ${expData.unlabelledPairCount}, TN: ${expData.trueNegatives}`);
 
   // ----------------------------------------------------
   // SUITE 6: ENDPOINT-LEVEL DUPLICATE SURFACE & METRICS
@@ -566,8 +727,8 @@ paths:
     headers: { 'Authorization': `Bearer ${adminToken}` }
   });
   const testRunData = await resTestRun.json();
-  const allPassed = testRunData.results && testRunData.results.every(t => t.status === 'PASS');
-  logTest('POST /api/tests/run executes all 8 programmatic scenarios successfully', allPassed && testRunData.results.length === 8, `${testRunData.results.length} scenarios executed`);
+  const allPassed = testRunData.results && testRunData.results.length > 0 && testRunData.results.every(t => t.status === 'PASS');
+  logTest('POST /api/tests/run executes all integration test scenarios successfully (100% PASS)', allPassed, `${testRunData.results ? testRunData.results.length : 0} scenarios executed`);
 
   await stopServer();
 
