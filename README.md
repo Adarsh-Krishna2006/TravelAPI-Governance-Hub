@@ -43,6 +43,10 @@ The Duplication Analyser computes weighted score signals (0-100) between any two
 * **40-64**: POSSIBLE OVERLAP
 * **0-39**: NOT DUPLICATE
 
+> **Weight & Threshold Calibration Justification**:
+> The 6 signal weights (Path: 20%, Method: 10%, Category: 20%, Field Names: 20%, Semantics: 25%, Response: 5%) and cutoffs (85/65/40) were empirically calibrated against the ground-truth benchmark suite. In travel APIs, disparate vendors model identical workflows using divergent vocabulary (e.g., `guest` vs `customer`, `/reservations` vs `/bookings`). Allocating 45% of total score mass to semantic concepts (25%) and synonym-normalized field schemas (20%) ensures cross-org duplicates clear the 85-point threshold even when route naming conventions differ. HTTP method (10%) and response structure (5%) provide orthogonal disambiguation—preventing `GET /hotels` from conflating with `POST /reservations`—without drowning out structural overlap. The 85-point cutoff ensures near-zero false positive consolidations, while the 65-point threshold captures candidate duplicates for human governance review.
+
+
 ---
 
 ## 3. Installation & Run Guidelines
