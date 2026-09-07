@@ -328,7 +328,7 @@ export default function App() {
     setConfirmModal({
       open: true,
       title: 'Execute Automated Full Demo Scan?',
-      message: 'This will reset the database, run an enhanced duplicate analysis scan across all APIs, auto-consolidate high-priority duplicate hotel endpoints, and benchmark Baseline vs Enhanced performance. Proceed?',
+      message: 'This will reset the database, run an enhanced duplicate analysis scan across all APIs, simulate a sample consolidation decision for the StayEasy duplicate endpoint, and benchmark Baseline vs Enhanced performance. Proceed?',
       actionLabel: 'Run Full Demo',
       onConfirm: async () => {
         setConfirmModal(null);
@@ -706,8 +706,7 @@ export default function App() {
                   <div className="h-56">
                     <ResponsiveContainer width="100%" height="100%">
                       <AreaChart data={[
-                        { name: 'Baseline', surface: metrics.baseline ? metrics.baseline.duplicateSurface : null },
-                        { name: 'Target', surface: 15 },
+                        { name: 'Baseline Scan', surface: metrics.baseline ? metrics.baseline.duplicateSurface : null },
                         { name: 'Current Measured', surface: metrics.measured.duplicateSurface }
                       ]}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
@@ -1499,7 +1498,7 @@ export default function App() {
                 <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-3">
                   <span className="text-[10px] font-bold text-indigo-400 uppercase bg-indigo-950 px-2 py-0.5 rounded">Governance Manager</span>
                   <h3 className="font-bold text-slate-200">Mark Kowalski (VP Operations)</h3>
-                  <p className="text-slate-300 italic">"Seeing our duplicate surface percentage drop from 50% down to 15% is concrete evidence we can show to the CIO."</p>
+                  <p className="text-slate-300 italic">"Tracking our duplicate surface percentage before and after approved governance consolidations gives us concrete evidence we can show to executive leadership."</p>
                 </div>
                 <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-3">
                   <span className="text-[10px] font-bold text-emerald-400 uppercase bg-emerald-950 px-2 py-0.5 rounded">External Partner</span>

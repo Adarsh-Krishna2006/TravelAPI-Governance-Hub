@@ -14,7 +14,12 @@ As TravelSphere scales, different departments and external partners build overla
 * Use inconsistent schemas and field names (e.g., `customerId` vs `guest_id` vs `client_id`).
 * Lack unified ownership records, leading to multiple organizations exposing duplicate hotel inventory or digital payment gateways.
 
-This Governance Hub maps these overlapping surfaces, calculates similarity indexes (0-100), offers side-by-side spec field mapping comparisons, tracks precision/recall data, and allows administrators to deprecate duplicates or establish formal legacy integration mappings.
+This Governance Hub maps these overlapping surfaces, calculates multi-signal similarity scores (0-100), offers explainable side-by-side field relationship mappings, and presents duplicate candidates for human review. The platform enforces a strict five-stage governance lifecycle:
+
+$$\text{Automated Detection} \longrightarrow \text{Explainable Evidence} \longrightarrow \text{Human Review} \longrightarrow \text{Governance Decision} \longrightarrow \text{Consolidation / Exemption}$$
+
+The automated duplicate analyser produces recommendations and candidates only; all final lifecycle actions (deprecating endpoints, re-routing traffic, or issuing contractual exemptions) strictly require authorized human approval.
+
 
 ---
 
@@ -100,7 +105,7 @@ To demonstrate the full-stack prototype in a structured review:
    - Triggers the **Catalogue Duplicate Scan**.
    - Reviews the **Side-by-Side Comparison** and highlights semantic field connections.
    - Submits a **Consolidation Justification** to deprecate StayEasy and redirect routes.
-   - Monitors the updated **Duplicate Surface Metrics** down to the target rate on the Dashboard.
+   - Monitors the updated **Duplicate Surface Metrics** before and after governance actions on the Dashboard.
 
 ---
 
@@ -126,22 +131,66 @@ node backend/tests.js
 
 ---
 
-## 6. Live Deployment
+## 6. Authentication & Role-Based Access Control (RBAC)
 
-* **Render Production URL**: [https://travelapi-governance-hub.onrender.com/](https://travelapi-governance-hub.onrender.com/)
-* **Default Admin Demo User**: `admin@travelsphere.demo` (Switch roles via Demo Role Switcher bar)
+The platform implements **demo authentication and RBAC** powered by cryptographically signed JSON Web Tokens (`jsonwebtoken`):
+* **Authentication Flow**: Users authenticate via the interactive Demo Role Switcher bar, which issues genuine signed JWTs bearing the user's ID, name, role, and organisation ID.
+* **Strict Token Enforcement**: Backend middleware rejects missing, malformed, forged, or expired tokens with HTTP 401 Unauthorized.
+* **Production Security**: In production mode (`NODE_ENV=production`), `JWT_SECRET` must be set via environment variables, or the server will fail safely at startup.
+
+### Role Permissions Matrix
+
+| Role | Target Persona | Scope & Allowed Capabilities | Enforced Restrictions (HTTP 403) |
+| :--- | :--- | :--- | :--- |
+| **Admin** | `Alice Admin` | Full global authority: global duplicate scans, full demo runner, database reset, consolidation, formal governance, test runner execution, and experiment runs. | None. |
+| **API Owner** | `Bob Owner` | Organisation-scoped access: manage own APIs, trigger organisation-scoped scans, and review duplicate findings involving own organisation. | Blocked from cross-org mutations, competitor reviews, database reset, test runner execution, and formal consolidation. |
+| **External Partner** | `Charlie Partner` (FlyFast) | Quarantined partner access: view own partner APIs and public TravelSphere gateways; view own-org audit logs and governance decisions. | Competitor private APIs (*GlobalHotels, StayEasy, PayLink, SecurePay*), competitor duplicate findings, and rival governance records are strictly redacted (0 leaked). Blocked from all administrative and mutation actions. |
+| **Auditor** | `Diana Auditor` | Compliance read-only access: view audit logs, governance decisions, test runner execution evidence (`GET /api/tests/results`), and experiment benchmarks (`GET /api/experiment/results`). | Strictly blocked from all mutations: creating APIs, updating categories, reviewing duplicates, running scans, triggering test execution, or executing consolidations. |
 
 ---
 
-## 7. Database Seed Counts & Methodology
+## 7. Experiment & Evaluation Methodology
 
-* **Exact Seed Data Counts**:
-  - **API Count**: 25 APIs spanning 5 organisations (TravelSphere, StayEasy Hotels, GlobalHotels, FlyFast Airlines, and PayLink Payments).
-  - **Endpoint Count**: 75 endpoints mapped to their respective APIs.
-  - **Field Count**: 153 schema fields with semantic concept classifications and direction mappings.
-  - **Test Count**: 53 automated unit/integration test assertions + 11 live HTTP integration test scenarios.
-* **Ground Truth Reviewing**: Evaluates 8 explicit ground-truth pairs (5 duplicate pairs, 3 negative control pairs) across 3 explicit states (`DUPLICATE`, `NOT_DUPLICATE`, `UNLABELLED`), computing precision, recall, and F1 dynamically over labelled pairs without inflating True Negatives.
-* **Schema Flattening**: Nested properties are extracted and flattened with dotted notation (e.g., `guest.address.city`) up to 5 levels deep.
-* **Surface Formula**:
-  $$\text{Duplicate Surface \%} = \frac{\text{Active Duplicate Endpoints}}{\text{Total Active Endpoints}} \times 100$$
-  Endpoints belonging to deprecated or consolidated APIs are strictly excluded from the active endpoint pool.
+The platform features an automated **Experiment Engine** comparing the baseline approach against the enhanced multi-signal model:
+
+* **Baseline Analyser**:
+  - Evaluates normalized route path, HTTP method, and exact field-name overlap.
+  - Does **not** include semantic concept mappings, domain synonym lookups, or category compatibility.
+  - Formula: $\text{Score} = (0.40 \times \text{Route} + 0.40 \times \text{Exact Fields} + 0.20 \times \text{Method}) \times 100$.
+* **Enhanced Analyser**:
+  - Incorporates all 6 weighted signals: Route (20%), Method (10%), Category (20%), Field Names (20%), Semantics (25%), and Response Structure (5%).
+  - Utilizes canonical travel domain synonym groups and relationship classifications (*Exact*, *Strong*, *Contextual*).
+* **3-State Ground Truth Isolation**:
+  - Ground truth is evaluated across 3 explicit states: `DUPLICATE`, `NOT_DUPLICATE`, and `UNLABELLED`.
+  - The benchmark suite contains **8 labelled ground-truth pairs** (5 confirmed duplicate pairs, 3 negative control pairs).
+  - Out of the 300 total pairwise comparisons across the 25 catalogued APIs, the remaining **292 unlabelled pairs are strictly excluded from the confusion matrix**, ensuring they are never falsely inflated into True Negatives.
+  - Evaluates True Positives (TP), False Positives (FP), False Negatives (FN), True Negatives (TN), Precision, Recall, F1-score, execution time, and duplicate surface.
+
+---
+
+## 8. Database Seed Counts & Surface Metrics
+
+* **Exact Seed Data Counts (Verified from Code & Database)**:
+  - **API Count**: 25 APIs spanning 6 organisations (*TravelSphere Internal, FlyFast Airlines, GlobalHotels, StayEasy, PayLink, SecurePay*).
+  - **Endpoint Count**: 75 endpoints mapped across the 25 APIs (3 endpoints per API).
+  - **Field Count**: 69 schema fields with semantic concept classifications and direction mappings in `DEFAULT_FIELDS` / `db.api_fields`.
+  - **Organisations**: 6 active organisations (`org-ts`, `org-flyfast`, `org-globalhotels`, `org-stayeasy`, `org-paylink`, `org-securepay`).
+  - **User Personas**: 4 default users covering all 4 platform roles.
+  - **Test Count**: 53 automated unit/integration test assertions across 7 test suites + 11 live HTTP integration test scenarios.
+* **Endpoint-Level Duplicate Surface Formula**:
+  $$\text{Duplicate Surface \%} = \left( \frac{\text{Active Overlapping API Endpoints}}{\text{Total Active API Endpoints}} \right) \times 100$$
+  - **Active Endpoints**: Endpoints belonging to non-deprecated APIs. Endpoints belonging to deprecated or consolidated APIs are strictly excluded from both the numerator and denominator.
+  - **Active Overlapping Endpoints**: Distinct active endpoints participating in high-priority duplicate pairs (score $\ge 85$) that remain unresolved (`Needs Review` or `Confirmed Duplicate`).
+* **OpenAPI 3.x Support**:
+  - Supports OpenAPI 3.0 JSON and YAML specification parsing via `js-yaml`.
+  - Performs structural validation, rejecting missing versions, unsupported versions, missing info/title, and missing paths as explicit errors (`isValid: false`).
+  - Automatically derives service category from tags/summary or assigns default `"Unclassified"`.
+  - Recursively extracts nested `requestBody` and response properties (up to depth $\le 5$) with dotted naming conventions (e.g., `guest.address.city`).
+  - Automatically scrubs hardcoded secrets, bearer tokens, and credentials (`***REDACTED_CREDENTIAL***`).
+
+---
+
+## 9. Live Deployment
+
+* **Render Production URL**: [https://travelapi-governance-hub.onrender.com/](https://travelapi-governance-hub.onrender.com/)
+* **Default Admin Demo User**: `admin@travelsphere.demo` (Switch roles via Demo Role Switcher bar)
