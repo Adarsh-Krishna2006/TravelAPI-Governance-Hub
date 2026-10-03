@@ -1,4 +1,4 @@
-import { calculateContextualFieldSimilarity } from './embeddings.js';
+import { calculateContextualFieldSimilarity, calculateContextualFieldSimilarityAsync } from './embeddings.js';
 
 const SYNONYMS = {
   customer: ['guest', 'guests', 'client', 'clients', 'user', 'users', 'passenger', 'passengers', 'payer', 'payers', 'account', 'accounts', 'customer', 'customers'],
@@ -215,10 +215,11 @@ export function analyzeBaselinePair(apiA, apiB) {
 }
 
 // --- ENHANCED ANALYSIS ENGINE (With Semantics & Relationships) ---
-export function analyzeEnhancedPair(apiA, apiB, settings = {}, options = {}) {
+export async function analyzeEnhancedPair(apiA, apiB, settings = {}, options = {}) {
   const weights = settings.weights || { route: 20, method: 10, category: 20, fields: 20, semantics: 25, output: 5 };
   const useEmbeddings = options.useEmbeddings !== false && options.modelVariant !== 'curated';
-  
+  const usePretrained = useEmbeddings && (options.modelVariant === 'pretrained' || !options.modelVariant);
+
   // 1. Route similarity
   const routeScore = getRouteSimilarity(extractRoute(apiA), extractRoute(apiB), apiA.category, apiB.category);
 
@@ -242,8 +243,8 @@ export function analyzeEnhancedPair(apiA, apiB, settings = {}, options = {}) {
     }
   }
 
-  // Cross-vertical domain mismatch flag (e.g. Flight vs Hotel)
-  const isVerticalMismatch = 
+  // Cross-vertical domain mismatch flag
+  const isVerticalMismatch =
     ((apiA.category.includes('Flight') && apiB.category.includes('Hotel')) ||
      (apiA.category.includes('Hotel') && apiB.category.includes('Flight')));
 
@@ -256,6 +257,7 @@ export function analyzeEnhancedPair(apiA, apiB, settings = {}, options = {}) {
   let contextualEmbeddingCount = 0;
   let totalEmbeddingSim = 0;
   let embeddingSimCount = 0;
+  let embeddingSourceUsed = 'fallback'; // default
 
   for (const fA of fieldsA) {
     for (const fB of fieldsB) {
@@ -265,8 +267,16 @@ export function analyzeEnhancedPair(apiA, apiB, settings = {}, options = {}) {
       const isExact = (fA.name || '').toLowerCase() === (fB.name || '').toLowerCase();
       const isCurated = !isExact && (conceptA && conceptB && conceptA === conceptB);
 
-      const embSim = useEmbeddings ? calculateContextualFieldSimilarity(fA, fB) : 0;
-      if (useEmbeddings) {
+      let embResult = { similarity: 0, source: 'fallback' };
+      if (usePretrained) {
+        embResult = await calculateContextualFieldSimilarityAsync(fA, fB);
+        if (embResult.source === 'pretrained') embeddingSourceUsed = 'pretrained';
+      } else if (useEmbeddings) {
+        const sim = calculateContextualFieldSimilarity(fA, fB);
+        embResult = { similarity: sim, source: 'fallback' };
+      }
+      const embSim = embResult.similarity;
+      if (usePretrained || useEmbeddings) {
         totalEmbeddingSim += embSim;
         embeddingSimCount++;
       }
@@ -307,13 +317,13 @@ export function analyzeEnhancedPair(apiA, apiB, settings = {}, options = {}) {
           matchType,
           embeddingSimilarity: Math.round(embSim * 1000) / 1000,
           similarityScore: rel === 'Exact Equivalent' ? 100 : (rel === 'Strong Equivalent' ? (matchType === 'curated_synonym' ? 88 : Math.round(embSim * 100)) : Math.round(embSim * 85)),
-          reason: matchType === 'exact' 
+          reason: matchType === 'exact'
             ? `Exact name match (${fA.name})`
             : matchType === 'curated_synonym'
-            ? `Curated domain synonym (${conceptA} ↔ ${conceptB})`
+            ? `Curated domain synonym (${conceptA} â†” ${conceptB})`
             : matchType === 'contextual_embedding'
             ? `Contextual vector embedding cosine similarity (${(embSim * 100).toFixed(1)}%)`
-            : `Mapped via semantic concept (${conceptA} ↔ ${conceptB})`,
+            : `Mapped via semantic concept (${conceptA} â†” ${conceptB})`,
           confidence: rel === 'Exact Equivalent' ? 1.0 : (matchType === 'curated_synonym' ? 0.95 : Math.round(embSim * 100) / 100)
         });
         inputMatches++;
@@ -324,13 +334,11 @@ export function analyzeEnhancedPair(apiA, apiB, settings = {}, options = {}) {
 
   const totalInputUnique = Math.max(1, fieldsA.length + fieldsB.length - inputMatches);
   const rawFieldsScore = (fieldsA.length > 0 && fieldsB.length > 0) ? (inputMatches / totalInputUnique) : 0;
-  // If distinct verticals collide, dampen field score
   const fieldsScore = isVerticalMismatch ? rawFieldsScore * 0.5 : rawFieldsScore;
 
-  // 5. Semantic similarity (concept overlap with layered contextual embedding fallback)
+  // 5. Semantic similarity
   let semanticMatchesSum = 0;
   let semanticCount = 0;
-
   for (const fA of fieldsA) {
     for (const fB of fieldsB) {
       const conceptA = fA.semanticConcept || CONCEPT_MAP[fA.name];
@@ -340,10 +348,17 @@ export function analyzeEnhancedPair(apiA, apiB, settings = {}, options = {}) {
         semanticCount++;
         break;
       }
-      if (useEmbeddings) {
-        const embSim = calculateContextualFieldSimilarity(fA, fB);
-        if (embSim >= 0.75) {
-          semanticMatchesSum += embSim;
+      if (usePretrained) {
+        const { similarity } = await calculateContextualFieldSimilarityAsync(fA, fB);
+        if (similarity >= 0.75) {
+          semanticMatchesSum += similarity;
+          semanticCount++;
+          break;
+        }
+      } else if (useEmbeddings) {
+        const sim = calculateContextualFieldSimilarity(fA, fB);
+        if (sim >= 0.75) {
+          semanticMatchesSum += sim;
           semanticCount++;
           break;
         }
@@ -362,11 +377,11 @@ export function analyzeEnhancedPair(apiA, apiB, settings = {}, options = {}) {
       outputMatches++;
     }
   }
-  const outputScore = (outA.length > 0 && outB.length > 0) 
-    ? (outputMatches / Math.max(1, outA.length + outB.length - outputMatches)) 
+  const outputScore = (outA.length > 0 && outB.length > 0)
+    ? (outputMatches / Math.max(1, outA.length + outB.length - outputMatches))
     : (isVerticalMismatch ? 0 : 0.5);
 
-  // Final Weighted Score calculation
+  // Final weighted score
   const scoreRaw = (
     (routeScore * (weights.route / 100)) +
     (methodScore * (weights.method / 100)) +
@@ -375,33 +390,26 @@ export function analyzeEnhancedPair(apiA, apiB, settings = {}, options = {}) {
     (semanticsScore * (weights.semantics / 100)) +
     (outputScore * (weights.output / 100))
   ) * 100;
-
   const score = Math.round(scoreRaw * 10) / 10;
 
-  // Priority Labeling
   const thresholds = settings.thresholds || { high: 85, potential: 65, overlap: 40 };
   let label = 'NOT DUPLICATE';
   if (score >= thresholds.high) label = 'HIGH PRIORITY DUPLICATE';
   else if (score >= thresholds.potential) label = 'POTENTIAL DUPLICATE';
   else if (score >= thresholds.overlap) label = 'POSSIBLE OVERLAP';
 
-  // Construct Explainable Evidence Checkmarks List
   const evidenceCheckmarks = [];
-  if (categoryScore === 1.0) evidenceCheckmarks.push(`✓ Same business category (${apiA.category})`);
-  else if (categoryScore > 0) evidenceCheckmarks.push(`✓ Related travel domains (${apiA.category} & ${apiB.category})`);
-  
-  if (methodScore === 1.0) evidenceCheckmarks.push(`✓ Same HTTP method (${extractMethod(apiA)})`);
-  
-  if (routeScore > 0.6) evidenceCheckmarks.push(`✓ Strong route token similarity (${Math.round(routeScore * 100)}%)`);
-  
-  if (fieldMappings.length > 0) evidenceCheckmarks.push(`✓ ${fieldMappings.length} field parameters have strong semantic concept matches`);
-  
-  if (fieldMappings.some(m => m.semanticConceptA === 'currency_code')) evidenceCheckmarks.push(`✓ Currency fields are equivalent`);
-  if (fieldMappings.some(m => m.semanticConceptA === 'check_in_date')) evidenceCheckmarks.push(`✓ Date fields are equivalent`);
-  if (fieldMappings.some(m => m.semanticConceptA === 'monetary_amount')) evidenceCheckmarks.push(`✓ Amount/Price fields are equivalent`);
-  if (fieldMappings.some(m => m.semanticConceptA === 'booking_identifier')) evidenceCheckmarks.push(`✓ Booking/Reservation identifiers are equivalent`);
-  if (fieldMappings.some(m => m.semanticConceptA === 'transaction_identifier')) evidenceCheckmarks.push(`✓ Payment Transaction identifiers are equivalent`);
-  if (contextualEmbeddingCount > 0) evidenceCheckmarks.push(`✓ ${contextualEmbeddingCount} field parameter(s) matched via contextual vector embedding similarity`);
+  if (categoryScore === 1.0) evidenceCheckmarks.push(`âœ“ Same business category (${apiA.category})`);
+  else if (categoryScore > 0) evidenceCheckmarks.push(`âœ“ Related travel domains (${apiA.category} & ${apiB.category})`);
+  if (methodScore === 1.0) evidenceCheckmarks.push(`âœ“ Same HTTP method (${extractMethod(apiA)})`);
+  if (routeScore > 0.6) evidenceCheckmarks.push(`âœ“ Strong route token similarity (${Math.round(routeScore * 100)}%)`);
+  if (fieldMappings.length > 0) evidenceCheckmarks.push(`âœ“ ${fieldMappings.length} field parameters have strong semantic concept matches`);
+  if (fieldMappings.some(m => m.semanticConceptA === 'currency_code')) evidenceCheckmarks.push(`âœ“ Currency fields are equivalent`);
+  if (fieldMappings.some(m => m.semanticConceptA === 'check_in_date')) evidenceCheckmarks.push(`âœ“ Date fields are equivalent`);
+  if (fieldMappings.some(m => m.semanticConceptA === 'monetary_amount')) evidenceCheckmarks.push(`âœ“ Amount/Price fields are equivalent`);
+  if (fieldMappings.some(m => m.semanticConceptA === 'booking_identifier')) evidenceCheckmarks.push(`âœ“ Booking/Reservation identifiers are equivalent`);
+  if (fieldMappings.some(m => m.semanticConceptA === 'transaction_identifier')) evidenceCheckmarks.push(`âœ“ Payment Transaction identifiers are equivalent`);
+  if (contextualEmbeddingCount > 0) evidenceCheckmarks.push(`âœ“ ${contextualEmbeddingCount} field parameter(s) matched via contextual vector embedding similarity`);
 
   const avgEmbeddingSimilarity = embeddingSimCount > 0 ? Math.round((totalEmbeddingSim / embeddingSimCount) * 1000) / 1000 : 0;
 
@@ -428,23 +436,20 @@ export function analyzeEnhancedPair(apiA, apiB, settings = {}, options = {}) {
         embeddingSimilarity: m.embeddingSimilarity,
         confidence: m.confidence
       }))
-    }
+    },
+    embeddingSource: embeddingSourceUsed
   };
 }
 
-export function runFullAnalysis(apis, settings = {}, options = {}) {
+export async function runFullAnalysis(apis, settings = {}, options = {}) {
   const results = [];
-  
   for (let i = 0; i < apis.length; i++) {
     for (let j = i + 1; j < apis.length; j++) {
       const apiA = apis[i];
       const apiB = apis[j];
-      
-      const comparison = analyzeEnhancedPair(apiA, apiB, settings, options);
-      
+      const comparison = await analyzeEnhancedPair(apiA, apiB, settings, options);
       const epAId = (apiA.primaryEndpoint && apiA.primaryEndpoint.id) || (apiA.endpoints && apiA.endpoints[0] && apiA.endpoints[0].id) || `ep-${apiA.id}`;
       const epBId = (apiB.primaryEndpoint && apiB.primaryEndpoint.id) || (apiB.endpoints && apiB.endpoints[0] && apiB.endpoints[0].id) || `ep-${apiB.id}`;
-
       results.push({
         id: `find-${apiA.id}-${apiB.id}`,
         apiAId: apiA.id,
@@ -463,10 +468,11 @@ export function runFullAnalysis(apis, settings = {}, options = {}) {
         methodScore: comparison.methodScore,
         detectedAt: new Date().toISOString(),
         fieldMappings: comparison.fieldMappings,
-        evidenceCheckmarks: comparison.evidenceCheckmarks
+        evidenceCheckmarks: comparison.evidenceCheckmarks,
+        embeddingSource: comparison.embeddingSource
       });
     }
   }
-
   return results.sort((a, b) => b.score - a.score);
 }
+

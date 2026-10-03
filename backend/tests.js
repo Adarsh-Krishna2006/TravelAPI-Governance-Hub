@@ -527,7 +527,7 @@ paths:
   const importedApiB = enrichedAfterImport.find(a => a.name === 'Room Reservations Gateway Beta');
   let importDuplicateScore = 0;
   if (importedApiA && importedApiB) {
-    const importComp = analyzeEnhancedPair(importedApiA, importedApiB, currentDb.settings);
+    const importComp = await analyzeEnhancedPair(importedApiA, importedApiB, currentDb.settings);
     importDuplicateScore = importComp.score;
   }
   logTest('Imported OpenAPI specs participate in duplicate analysis with score >= 75%', importDuplicateScore >= 75, `Score: ${importDuplicateScore}%`);
@@ -634,18 +634,18 @@ paths:
   // 5.1: High Priority Duplicate: Hotel Bookings (TravelSphere vs StayEasy)
   const tsHotel = enrichedApis.find(a => a.id === 'api-ts-hotel-booking');
   const seHotel = enrichedApis.find(a => a.id === 'api-stayeasy-reserve');
-  const hotelComp = analyzeEnhancedPair(tsHotel, seHotel, db.settings);
+  const hotelComp = await analyzeEnhancedPair(tsHotel, seHotel, db.settings);
   logTest('Detect Hotel Booking duplication (TravelSphere vs StayEasy) with score >= 85%', hotelComp.score >= 85, `Score: ${hotelComp.score}%`);
 
   // 5.2: False Positive Control: Hotel Booking vs Flight Booking
   const tsFlight = enrichedApis.find(a => a.id === 'api-ts-flight-booking');
-  const controlComp = analyzeEnhancedPair(tsHotel, tsFlight, db.settings);
+  const controlComp = await analyzeEnhancedPair(tsHotel, tsFlight, db.settings);
   logTest('False Positive Control: Segregate Hotel vs Flight bookings with score < 40%', controlComp.score < 40, `Score: ${controlComp.score}%`);
 
   // 5.3: Semantic Duplicate: Travel Orders vs Reservation Mgmt
   const tsOrders = enrichedApis.find(a => a.id === 'api-ts-travel-orders');
   const seMgmt = enrichedApis.find(a => a.id === 'api-stayeasy-mgmt');
-  const ordersComp = analyzeEnhancedPair(tsOrders, seMgmt, db.settings);
+  const ordersComp = await analyzeEnhancedPair(tsOrders, seMgmt, db.settings);
   logTest('Detect Semantic Duplicate: Travel Orders vs Reservation Management with score >= 60%', ordersComp.score >= 60, `Score: ${ordersComp.score}%`);
 
   // 5.4: Baseline vs Enhanced comparison execution
@@ -659,6 +659,9 @@ paths:
   // 5.5: 3-State Ground Truth Verification
   const valid3State = expData.labelledPairCount === 8 && expData.unlabelledPairCount === 292 && expData.trueNegatives === 3;
   logTest('Ground Truth 3-State Overhaul: Unlabelled pairs must NOT become True Negatives', valid3State, `Labelled: ${expData.labelledPairCount}, Unlabelled: ${expData.unlabelledPairCount}, TN: ${expData.trueNegatives}`);
+
+  // 5.6: Pretrained Embedding Execution & Summary Flag
+  logTest('Model C exposes truthful embedding source summary flag', typeof expData.modelC_usedPretrained === 'boolean' && ['pretrained', 'fallback'].includes(expData.embeddingSource), `modelC_usedPretrained=${expData.modelC_usedPretrained}, embeddingSource=${expData.embeddingSource}`);
 
   // ----------------------------------------------------
   // SUITE 6: ENDPOINT-LEVEL DUPLICATE SURFACE & METRICS

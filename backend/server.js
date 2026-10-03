@@ -68,26 +68,37 @@ if (process.env.NODE_ENV !== 'test') {
       console.log(`DB Loaded: ${db.apis.length} APIs indexed, ${db.users.length} mock users, ${db.endpoints.length} endpoints.`);
 
       // Pre-warm contextual embedding cache in background
-      initPretrainedPipeline().then(() => {
+      initPretrainedPipeline().then(async () => {
         if (db.api_fields) {
           prewarmEmbeddingCache(db.api_fields).catch(() => {});
         }
+        
+        // Automatically trigger initial analysis on boot if none exists
+        if (!db.duplicate_findings || db.duplicate_findings.length === 0) {
+          console.log(`Running initial duplicate analysis scan on enriched APIs...`);
+          const enriched = getEnrichedApis(db);
+          const results = await runFullAnalysis(enriched, db.settings);
+          
+          db.duplicate_findings = results;
+          writeDB(db);
+          console.log(`Initial analysis complete: generated ${results.length} unique pair records.`);
+        }
       }).catch(err => {
         console.warn('Pretrained embeddings background init warning:', err.message);
-      });
-      
-      // Automatically trigger initial analysis on boot if none exists
-      if (!db.duplicate_findings || db.duplicate_findings.length === 0) {
-        console.log(`Running initial duplicate analysis scan on enriched APIs...`);
-        const enriched = getEnrichedApis(db);
-        const results = runFullAnalysis(enriched, db.settings);
         
-        db.duplicate_findings = results;
-        writeDB(db);
-        console.log(`Initial analysis complete: generated ${results.length} unique pair records.`);
-      }
+        // Still run analysis with fallback embeddings
+        if (!db.duplicate_findings || db.duplicate_findings.length === 0) {
+          console.log(`Running initial duplicate analysis scan (fallback embeddings)...`);
+          const enriched = getEnrichedApis(db);
+          runFullAnalysis(enriched, db.settings).then(results => {
+            db.duplicate_findings = results;
+            writeDB(db);
+            console.log(`Initial analysis complete: generated ${results.length} unique pair records.`);
+          }).catch(e => console.error('Analysis scan failed:', e));
+        }
+      });
     } catch (e) {
-      console.error("Failed to run startup duplication scan", e);
+      console.error("Failed to run startup initialization", e);
     }
   });
 }

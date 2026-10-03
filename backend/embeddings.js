@@ -268,6 +268,9 @@ export function computeCosineSimilarity(vecA, vecB) {
 /**
  * Calculates Contextual Embedding Similarity between two field schema objects.
  */
+/**
+ * Calculates Contextual Embedding Similarity between two field schema objects.
+ */
 export function calculateContextualFieldSimilarity(fieldA, fieldB) {
   try {
     if (!fieldA || !fieldB || (!fieldA.name && !fieldB.name)) return 0.0;
@@ -279,6 +282,71 @@ export function calculateContextualFieldSimilarity(fieldA, fieldB) {
     return 0.0;
   }
 }
+
+/**
+ * Asynchronously calculates contextual field similarity using the pretrained model if available.
+ * Returns an object containing similarity (0..1) and the embedding source used ('pretrained' | 'fallback').
+ */
+export async function calculateContextualFieldSimilarityAsync(fieldA, fieldB) {
+  try {
+    if (!fieldA || !fieldB || (!fieldA.name && !fieldB.name)) return { similarity: 0.0, source: 'fallback' };
+    const { vector: vecA, source: srcA } = await asyncGenerateEmbeddingIfAvailable(
+      fieldA?.name || '',
+      fieldA?.description || '',
+      fieldA?.semanticConcept || ''
+    );
+    const { vector: vecB, source: srcB } = await asyncGenerateEmbeddingIfAvailable(
+      fieldB?.name || '',
+      fieldB?.description || '',
+      fieldB?.semanticConcept || ''
+    );
+    const similarity = computeCosineSimilarity(vecA, vecB);
+    const source = srcA === 'pretrained' && srcB === 'pretrained' ? 'pretrained' : 'fallback';
+    return { similarity, source };
+  } catch (err) {
+    console.warn('Async embedding computation fallback encountered:', err.message);
+    return { similarity: 0.0, source: 'fallback' };
+  }
+}
+
+/**
+ * Generates an embedding (vector) asynchronously and reports whether the pretrained model was used.
+ * Returns an object { vector: Float32Array, source: 'pretrained' | 'fallback' }.
+ */
+export async function asyncGenerateEmbeddingIfAvailable(name = '', description = '', semanticConcept = '') {
+  const cacheKey = `${name || ''}::${description || ''}::${semanticConcept || ''}`;
+  if (embeddingCache.has(cacheKey)) {
+    const source = pretrainedAvailable ? 'pretrained' : 'fallback';
+    return { vector: embeddingCache.get(cacheKey), source };
+  }
+
+  try {
+    const pipe = await initPretrainedPipeline();
+    if (pipe) {
+      const text = [name, semanticConcept, description].filter(Boolean).join(': ');
+      if (!text.trim()) {
+        const emptyVec = new Float32Array(PRETRAINED_DIM);
+        embeddingCache.set(cacheKey, emptyVec);
+        return { vector: emptyVec, source: 'pretrained' };
+      }
+      const output = await pipe(text, { pooling: 'mean', normalize: true });
+      const vec = new Float32Array(output.data);
+      embeddingCache.set(cacheKey, vec);
+      return { vector: vec, source: 'pretrained' };
+    }
+  } catch (err) {
+    console.warn('[Embeddings] asyncGenerateEmbeddingIfAvailable fallback:', err.message);
+  }
+
+  const vec = generateDeterministicFallbackEmbedding(name, description, semanticConcept);
+  embeddingCache.set(cacheKey, vec);
+  return { vector: vec, source: 'fallback' };
+}
+
+/**
+ * Calculates Cosine Similarity between two Float32Array embedding vectors.
+ * Returns value between 0.0 and 1.0.
+ */
 
 /**
  * Returns cache size and diagnostic statistics.

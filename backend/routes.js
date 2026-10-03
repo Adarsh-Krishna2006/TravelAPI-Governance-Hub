@@ -4,6 +4,7 @@ import * as yaml from 'js-yaml';
 import { readDB, writeDB, resetDB, getEnrichedApis, GROUND_TRUTH_PAIRS } from './database.js';
 import { runFullAnalysis, analyzeEnhancedPair, analyzeBaselinePair, CONCEPT_MAP } from './analyser.js';
 import { parseGatewayExport, scrubCredentials, detectGatewayFormat } from './gateway.js';
+import { initPretrainedPipeline, isPretrainedModelLoaded, getEmbeddingCacheStats } from './embeddings.js';
 
 
 const router = express.Router();
@@ -287,7 +288,7 @@ router.get('/gateway-routes', authenticateToken, (req, res) => {
 });
 
 // OpenAPI Spec Parser & Validator (Real JSON & YAML via js-yaml with Credential Scrubbing)
-router.post('/specifications/parse', authenticateToken, blockAuditor, (req, res) => {
+router.post('/specifications/parse', authenticateToken, blockAuditor, async (req, res) => {
   const { content, format, importIntoCatalogue } = req.body;
   const user = req.user;
 
@@ -496,7 +497,7 @@ router.post('/specifications/parse', authenticateToken, blockAuditor, (req, res)
       // Re-run analysis so imported API and its endpoints/fields immediately participate in duplicate findings
       try {
         const enrichedApis = getEnrichedApis(db);
-        db.duplicate_findings = runFullAnalysis(enrichedApis, db.settings);
+        db.duplicate_findings = await runFullAnalysis(enrichedApis, db.settings);
         writeDB(db);
         logs.push(`Duplicate analysis refreshed: evaluated ${enrichedApis.length} APIs.`);
       } catch (analysisErr) {
@@ -540,7 +541,7 @@ router.post('/gateway/preview', authenticateToken, (req, res) => {
 });
 
 // Ingest and commit gateway export to catalogue
-router.post('/gateway/ingest', authenticateToken, blockAuditor, (req, res) => {
+router.post('/gateway/ingest', authenticateToken, blockAuditor, async (req, res) => {
   const user = req.user;
   const { content, formatHint, organisationId, visibility, category } = req.body;
 
@@ -592,7 +593,7 @@ router.post('/gateway/ingest', authenticateToken, blockAuditor, (req, res) => {
 
   // Automatically trigger duplicate scan
   const enrichedApis = getEnrichedApis(db);
-  const scanFindings = runFullAnalysis(enrichedApis, db.settings);
+  const scanFindings = await runFullAnalysis(enrichedApis, db.settings);
   db.duplicate_findings = scanFindings;
 
   writeDB(db);
@@ -666,7 +667,7 @@ router.post('/apis', authenticateToken, blockAuditor, (req, res) => {
 });
 
 // Update API Category (User classification support)
-router.patch('/apis/:id/category', authenticateToken, blockAuditor, (req, res) => {
+router.patch('/apis/:id/category', authenticateToken, blockAuditor, async (req, res) => {
   const { id } = req.params;
   const { category } = req.body;
   const user = req.user;
@@ -693,7 +694,7 @@ router.patch('/apis/:id/category', authenticateToken, blockAuditor, (req, res) =
   // Re-run analysis so updated category participates in duplicate scores
   try {
     const enrichedApis = getEnrichedApis(db);
-    db.duplicate_findings = runFullAnalysis(enrichedApis, db.settings);
+    db.duplicate_findings = await runFullAnalysis(enrichedApis, db.settings);
   } catch (err) {
     console.error('Error refreshing analysis after category update:', err);
   }
@@ -715,7 +716,7 @@ router.patch('/apis/:id/category', authenticateToken, blockAuditor, (req, res) =
 // --- ANALYSER & FINDINGS ---
 
 // Duplicate Analysis Trigger: Admin (all), API Owner (own organisation), Auditor (403), Partner (403)
-router.post('/analyse/run', authenticateToken, (req, res) => {
+router.post('/analyse/run', authenticateToken, async (req, res) => {
   const user = req.user;
 
   // Auditor is strictly read-only
@@ -736,7 +737,7 @@ router.post('/analyse/run', authenticateToken, (req, res) => {
 
   if (user.role === 'API Owner') {
     // API Owner allowed for own organisation: run analysis and update findings involving user's organisation
-    const allFindings = runFullAnalysis(activeApis, db.settings);
+    const allFindings = await runFullAnalysis(activeApis, db.settings);
     const orgFindings = allFindings.filter(f => {
       const apiA = activeApis.find(a => a.id === f.apiAId);
       const apiB = activeApis.find(a => a.id === f.apiBId);
@@ -765,7 +766,7 @@ router.post('/analyse/run', authenticateToken, (req, res) => {
   }
 
   // Admin role: global scan
-  const findings = runFullAnalysis(activeApis, db.settings);
+  const findings = await runFullAnalysis(activeApis, db.settings);
   db.duplicate_findings = findings;
   writeDB(db);
 
@@ -964,7 +965,7 @@ router.post('/governance/govern', authenticateToken, requireRole('Admin'), (req,
 
 // --- EXPERIMENT ENGINE & BASELINE COMPARISON ---
 
-router.post('/experiment/run', authenticateToken, requireRole('Admin'), (req, res) => {
+router.post('/experiment/run', authenticateToken, requireRole('Admin'), async (req, res) => {
   const db = getDB();
   const enrichedApis = getEnrichedApis(db);
   const activeApis = enrichedApis.filter(a => a.governanceStatus !== 'Deprecated');
@@ -973,6 +974,10 @@ router.post('/experiment/run', authenticateToken, requireRole('Admin'), (req, re
   const activeEndpoints = endpoints.filter(ep => activeApiIds.has(ep.apiId));
   const totalActiveEndpoints = activeEndpoints.length;
   const highThreshold = (db.settings && db.settings.thresholds && db.settings.thresholds.high) || 85;
+
+  // Initialize pretrained pipeline if available so Model C uses real MiniLM embeddings
+  await initPretrainedPipeline().catch(() => {});
+  let modelCUsedPretrained = isPretrainedModelLoaded();
 
   const startTime = Date.now();
   let baselineTP = 0, baselineFP = 0, baselineFN = 0, baselineTN = 0;
@@ -1007,12 +1012,15 @@ router.post('/experiment/run', authenticateToken, requireRole('Admin'), (req, re
       const basePred = baseScore >= 60;
 
       // Model B: Enhanced Curated Synonyms prediction (No vector embeddings)
-      const curatedEnh = analyzeEnhancedPair(apiA, apiB, db.settings, { modelVariant: 'curated' });
+      const curatedEnh = await analyzeEnhancedPair(apiA, apiB, db.settings, { modelVariant: 'curated' });
       const curatedPred = curatedEnh.score >= highThreshold;
 
       // Model C: Enhanced Pretrained Embeddings prediction (Curated Synonyms + all-MiniLM-L6-v2 embeddings)
-      const embEnh = analyzeEnhancedPair(apiA, apiB, db.settings, { modelVariant: 'pretrained' });
+      const embEnh = await analyzeEnhancedPair(apiA, apiB, db.settings, { modelVariant: 'pretrained' });
       const embPred = embEnh.score >= highThreshold;
+      if (embEnh.embeddingSource === 'pretrained') {
+        modelCUsedPretrained = true;
+      }
 
       // Surface calculations use active endpoints regardless of ground-truth label status
       if (basePred && activeApiIds.has(apiA.id) && activeApiIds.has(apiB.id)) {
@@ -1106,6 +1114,10 @@ router.post('/experiment/run', authenticateToken, requireRole('Admin'), (req, re
     baselineDuplicateSurface,
     enhancedDuplicateSurface,
     reductionPercent: Math.max(0, Math.round((baselineDuplicateSurface - enhancedDuplicateSurface) * 10) / 10),
+    modelC_usedPretrained: modelCUsedPretrained,
+    embeddingSource: modelCUsedPretrained ? 'pretrained' : 'fallback',
+    embeddingEngine: modelCUsedPretrained ? 'all-MiniLM-L6-v2 (Pretrained Transformers)' : 'Contextual Dense Vector (Fallback)',
+    embeddingCacheStats: getEmbeddingCacheStats(),
     models: [
       {
         modelName: 'Baseline Model',
@@ -1134,6 +1146,8 @@ router.post('/experiment/run', authenticateToken, requireRole('Admin'), (req, re
       {
         modelName: 'Enhanced (Pretrained Vector Embeddings - all-MiniLM-L6-v2)',
         description: 'Layered all-MiniLM-L6-v2 sentence embeddings combined with curated domain synonyms',
+        usedPretrained: modelCUsedPretrained,
+        embeddingSource: modelCUsedPretrained ? 'pretrained' : 'fallback',
         truePositives: embTP,
         falsePositives: embFP,
         falseNegatives: embFN,
@@ -1170,7 +1184,7 @@ router.get('/experiment/results', authenticateToken, (req, res) => {
 });
 
 // --- ONE-CLICK FULL DEMO RUNNER ---
-router.post('/demo/run-full', authenticateToken, requireRole('Admin'), (req, res) => {
+router.post('/demo/run-full', authenticateToken, requireRole('Admin'), async (req, res) => {
   try {
     // 1. Reset database to seed
     resetDB();
@@ -1178,7 +1192,7 @@ router.post('/demo/run-full', authenticateToken, requireRole('Admin'), (req, res
     // 2. Run analysis scan on enriched APIs
     const currentDB = getDB();
     const enriched = getEnrichedApis(currentDB);
-    const findings = runFullAnalysis(enriched, currentDB.settings);
+    const findings = await runFullAnalysis(enriched, currentDB.settings);
     currentDB.duplicate_findings = findings;
 
     // 3. Auto-consolidate high priority finding (Hotel Booking)
@@ -1693,7 +1707,7 @@ router.post('/tests/run', authenticateToken, requireRole('Admin'), async (req, r
   const flightBooking = enrichedApis.find(a => a.id === 'api-ts-flight-booking');
   let score9 = 0;
   if (hotelBooking && flightBooking) {
-    const comp = analyzeEnhancedPair(hotelBooking, flightBooking, db.settings);
+    const comp = await analyzeEnhancedPair(hotelBooking, flightBooking, db.settings);
     score9 = comp.score;
   }
   testResults.push({
@@ -1712,7 +1726,7 @@ router.post('/tests/run', authenticateToken, requireRole('Admin'), async (req, r
   const stayMgmtApi = enrichedApis.find(a => a.id === 'api-stayeasy-mgmt');
   let score10 = 0;
   if (ordersApi && stayMgmtApi) {
-    const comp = analyzeEnhancedPair(ordersApi, stayMgmtApi, db.settings);
+    const comp = await analyzeEnhancedPair(ordersApi, stayMgmtApi, db.settings);
     score10 = comp.score;
   }
   testResults.push({
