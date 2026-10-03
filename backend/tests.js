@@ -627,6 +627,7 @@ paths:
   // ----------------------------------------------------
   console.log('\n▶ Suite 5: Duplicate Detection Algorithm & Experiment');
 
+  resetDB();
   const db = readDB();
   const enrichedApis = getEnrichedApis(db);
 
@@ -653,10 +654,10 @@ paths:
     headers: { 'Authorization': `Bearer ${adminToken}` }
   });
   const expData = await resExp.json();
-  logTest('Run Baseline vs Enhanced Experiment dynamically without hardcoded values', expData.comparisonCount > 0 && expData.f1 > 0, `Enhanced F1: ${expData.f1}%, Comparisons: ${expData.comparisonCount}`);
+  logTest('Run Baseline vs Enhanced Experiment dynamically without hardcoded values', expData.comparisonCount === 300 && expData.f1 > 0, `Enhanced F1: ${expData.f1}%, Comparisons: ${expData.comparisonCount}`);
 
   // 5.5: 3-State Ground Truth Verification
-  const valid3State = expData.labelledPairCount === 8 && expData.unlabelledPairCount > 0 && expData.trueNegatives <= 8;
+  const valid3State = expData.labelledPairCount === 8 && expData.unlabelledPairCount === 292 && expData.trueNegatives === 3;
   logTest('Ground Truth 3-State Overhaul: Unlabelled pairs must NOT become True Negatives', valid3State, `Labelled: ${expData.labelledPairCount}, Unlabelled: ${expData.unlabelledPairCount}, TN: ${expData.trueNegatives}`);
 
   // ----------------------------------------------------
@@ -675,7 +676,7 @@ paths:
   });
   const metricsData = await resMetrics.json();
 
-  logTest('Duplicate surface uses endpoints instead of APIs', typeof metricsData.totalActiveEndpoints === 'number' && metricsData.totalActiveEndpoints >= 70, `Total Endpoints: ${metricsData.totalActiveEndpoints}`);
+  logTest('Duplicate surface uses endpoints instead of APIs', typeof metricsData.totalActiveEndpoints === 'number' && metricsData.totalActiveEndpoints === 75, `Total Endpoints: ${metricsData.totalActiveEndpoints}`);
   logTest('Measured duplicate surface percentage calculated accurately', typeof metricsData.measured.duplicateSurface === 'number' && metricsData.measured.duplicateSurface > 0, `Surface: ${metricsData.measured.duplicateSurface}%`);
   logTest('Metrics dynamically reflect latest experiment results', metricsData.f1 === expData.f1, `F1: ${metricsData.f1}%`);
 

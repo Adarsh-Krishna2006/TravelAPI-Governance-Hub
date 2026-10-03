@@ -215,8 +215,9 @@ export function analyzeBaselinePair(apiA, apiB) {
 }
 
 // --- ENHANCED ANALYSIS ENGINE (With Semantics & Relationships) ---
-export function analyzeEnhancedPair(apiA, apiB, settings = {}) {
+export function analyzeEnhancedPair(apiA, apiB, settings = {}, options = {}) {
   const weights = settings.weights || { route: 20, method: 10, category: 20, fields: 20, semantics: 25, output: 5 };
+  const useEmbeddings = options.useEmbeddings !== false && options.modelVariant !== 'curated';
   
   // 1. Route similarity
   const routeScore = getRouteSimilarity(extractRoute(apiA), extractRoute(apiB), apiA.category, apiB.category);
@@ -264,9 +265,11 @@ export function analyzeEnhancedPair(apiA, apiB, settings = {}) {
       const isExact = (fA.name || '').toLowerCase() === (fB.name || '').toLowerCase();
       const isCurated = !isExact && (conceptA && conceptB && conceptA === conceptB);
 
-      const embSim = calculateContextualFieldSimilarity(fA, fB);
-      totalEmbeddingSim += embSim;
-      embeddingSimCount++;
+      const embSim = useEmbeddings ? calculateContextualFieldSimilarity(fA, fB) : 0;
+      if (useEmbeddings) {
+        totalEmbeddingSim += embSim;
+        embeddingSimCount++;
+      }
 
       let rel = 'Different';
       let matchType = 'none';
@@ -337,11 +340,13 @@ export function analyzeEnhancedPair(apiA, apiB, settings = {}) {
         semanticCount++;
         break;
       }
-      const embSim = calculateContextualFieldSimilarity(fA, fB);
-      if (embSim >= 0.75) {
-        semanticMatchesSum += embSim;
-        semanticCount++;
-        break;
+      if (useEmbeddings) {
+        const embSim = calculateContextualFieldSimilarity(fA, fB);
+        if (embSim >= 0.75) {
+          semanticMatchesSum += embSim;
+          semanticCount++;
+          break;
+        }
       }
     }
   }
@@ -427,7 +432,7 @@ export function analyzeEnhancedPair(apiA, apiB, settings = {}) {
   };
 }
 
-export function runFullAnalysis(apis, settings = {}) {
+export function runFullAnalysis(apis, settings = {}, options = {}) {
   const results = [];
   
   for (let i = 0; i < apis.length; i++) {
@@ -435,7 +440,7 @@ export function runFullAnalysis(apis, settings = {}) {
       const apiA = apis[i];
       const apiB = apis[j];
       
-      const comparison = analyzeEnhancedPair(apiA, apiB, settings);
+      const comparison = analyzeEnhancedPair(apiA, apiB, settings, options);
       
       const epAId = (apiA.primaryEndpoint && apiA.primaryEndpoint.id) || (apiA.endpoints && apiA.endpoints[0] && apiA.endpoints[0].id) || `ep-${apiA.id}`;
       const epBId = (apiB.primaryEndpoint && apiB.primaryEndpoint.id) || (apiB.endpoints && apiB.endpoints[0] && apiB.endpoints[0].id) || `ep-${apiB.id}`;

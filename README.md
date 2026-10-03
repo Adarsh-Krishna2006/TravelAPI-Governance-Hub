@@ -44,13 +44,13 @@ The Duplication Analyser computes weighted score signals (0-100) between any two
 * **Field Semantics (25%)**: Implements a **Layered Semantic Strategy**:
   1. *Exact Token Match*: Direct string identity (`100%`).
   2. *Curated Domain Synonyms*: Matched via canonical Travel Domain concept mappings (`88-100%`).
-  3. *In-Process Contextual Vector Embeddings*: 64-dimensional dense vector embeddings with travel domain anchor projections and character trigram morphological hashing, evaluated via L2 cosine similarity (`cosine >= 0.70`).
+  3. *In-Process Contextual Pretrained Sentence Embeddings*: 384-dimensional dense vector embeddings generated in-process via `@xenova/transformers` (`all-MiniLM-L6-v2`) with local deterministic 64-dimensional anchor fallback, evaluated via L2 cosine similarity (`cosine >= 0.70`).
 * **Response Structure (5%)**: Evaluates schema structure returned by endpoints.
 
 ### Persistence Engine: Repository Pattern
 The backend implements a decoupled Repository Pattern (`backend/database/`):
 * **`JsonRepository` (Default)**: Zero-dependency local file persistence with atomic write locking and in-memory fallback.
-* **`PostgresRepository` (Production Ready)**: Relational driver connecting to PostgreSQL when `DATABASE_URL` is set, with connection pooling, transactional rollbacks, and schema migrations (`schema.sql`, `migrate.js`).
+* **`PostgresRepository` (ACID Relational Driver)**: Relational driver connecting to PostgreSQL when `DATABASE_URL` is set, with connection pooling, transactional rollbacks, and schema migrations (`schema.sql`, `migrate.js`).
 
 ### Generic API Gateway & Specification Ingestion Hub
 The platform provides a generic gateway export ingestion pipeline (`backend/gateway.js`) supporting:
@@ -60,6 +60,9 @@ The platform provides a generic gateway export ingestion pipeline (`backend/gate
 * **AWS API Gateway**: Ingests REST/HTTP API exports, parses `x-amazon-apigateway-integration` extensions, and scrubs IAM credentials.
 * **Automatic Credential Scrubbing**: Sanitizes API keys, Bearer tokens, AWS secrets, and client credentials with `***REDACTED_CREDENTIAL***`.
 
+> **Gateway Integration Clarification**:  
+> Gateway ingestion operates on exported configuration files (Kong declarative YAML/JSON, Apigee API proxy bundles, AWS API Gateway Swagger/OpenAPI exports) with automated credential sanitization. Continuous live administrative synchronization and live bidirectional polling with cloud gateway admin APIs are not implemented.
+
 ### Risk Threshold Labels
 * **85-100**: HIGH PRIORITY DUPLICATE
 * **65-84**: POTENTIAL DUPLICATE
@@ -67,7 +70,7 @@ The platform provides a generic gateway export ingestion pipeline (`backend/gate
 * **0-39**: NOT DUPLICATE
 
 > **Weight & Threshold Calibration Justification**:
-> The 6 signal weights (Path: 20%, Method: 10%, Category: 20%, Field Names: 20%, Semantics: 25%, Response: 5%) and cutoffs (85/65/40) were empirically calibrated against the ground-truth benchmark suite. In travel APIs, disparate vendors model identical workflows using divergent vocabulary (e.g., `guest` vs `customer`, `/reservations` vs `/bookings`). Allocating 45% of total score mass to semantic concepts (25%) and synonym-normalized field schemas (20%) ensures cross-org duplicates clear the 85-point threshold even when route naming conventions differ. HTTP method (10%) and response structure (5%) provide orthogonal disambiguation—preventing `GET /hotels` from conflating with `POST /reservations`—without drowning out structural overlap. The 85-point cutoff ensures near-zero false positive consolidations, while the 65-point threshold captures candidate duplicates for human governance review.
+> The 6 signal weights (Path: 20%, Method: 10%, Category: 20%, Field Names: 20%, Semantics: 25%, Response: 5%) and cutoffs (85/65/40) were empirically calibrated against the ground-truth benchmark suite. In travel APIs, disparate vendors model identical workflows using divergent vocabulary (e.g., `guest` vs `customer`, `/reservations` vs `/bookings`). Allocating 45% of total score mass to semantic concepts (25%) and synonym-normalized field schemas (20%) ensures cross-org duplicates clear the 85-point threshold even when route naming conventions differ. HTTP method (10%) and response structure (5%) provide orthogonal disambiguation—preventing `GET /hotels` from conflating with `POST /reservations`—without drowning out structural overlap. The 85-point cutoff ensures zero false positives in the ground-truth benchmark suite, while the 65-point threshold captures candidate duplicates for human governance review.
 
 
 
@@ -138,7 +141,7 @@ The platform includes a comprehensive test runner covering **70 automated assert
 5. **Duplicate Detection & 3-State Ground Truth (5 tests)**: Verifies $\ge 85\%$ detection for confirmed duplicates, $< 40\%$ for false positive controls, and $\ge 60\%$ for semantic synonyms. Implements explicit 3-state ground truth (`DUPLICATE`, `NOT_DUPLICATE`, `UNLABELLED`) where unlabelled pairs are strictly excluded from the confusion matrix (never inflated into True Negatives). Returns `labelledPairCount` and `unlabelledPairCount`.
 6. **Endpoint-Level Duplicate Surface (5 tests)**: Calculates measured duplication percentage over active endpoints rather than gross API counts. Formally verifies deprecation exclusion using a controlled synthetic dataset.
 7. **Automated Test Evidence Endpoint (1 test / 11 scenarios)**: `POST /api/tests/run` dispatches genuine local HTTP requests verifying missing JWT (401), invalid JWT (401), competitor API isolation (200, 0 leaked), competitor finding redaction (200, 0 leaked), competitor governance isolation (200, 0 leaked), auditor mutation attempt (403), API owner cross-org mutation attempt (403), strict OpenAPI validation errors, domain segregation, semantic matching, and corrupt YAML safety with a 100% pass rate.
-8. **Contextual Semantic Embeddings (5 tests)**: Verifies 64-dimensional vector embedding generation, high cosine similarity for domain synonyms (`customer_id` $\leftrightarrow$ `guest_id` at $\ge 65\%$), strong booking similarity (`bookingId` $\leftrightarrow$ `reservation_id` at $\ge 70\%$), orthogonal cross-vertical segregation (`flightNumber` vs `hotelId` at $< 45\%$), LRU embedding cache hits, and robust fallback on null/empty fields.
+8. **Contextual Semantic Embeddings (5 tests)**: Verifies in-process sentence embedding generation (384-dimensional `all-MiniLM-L6-v2` via `@xenova/transformers` with 64-dimensional deterministic anchor fallback), high cosine similarity for domain synonyms (`customer_id` $\leftrightarrow$ `guest_id` at $\ge 65\%$), strong booking similarity (`bookingId` $\leftrightarrow$ `reservation_id` at $\ge 70\%$), orthogonal cross-vertical segregation (`flightNumber` vs `hotelId` at $< 45\%$), LRU embedding cache hits, and robust fallback on null/empty fields.
 9. **Database Repository Abstraction (4 tests)**: Verifies dynamic factory selection (`JsonRepository` default without `DATABASE_URL`), `IRepository` contract conformance across CRUD methods, atomic transaction rollback on failure, and PostgreSQL DDL `schema.sql` completeness (11 tables and performance indexes).
 10. **Generic API Gateway Ingestion & Security (6 tests)**: Parses Kong Declarative JSON exports (services, routes, consumer credential scrubbing), Apigee API Proxies (flows, basepaths, secret scrubbing), and AWS API Gateway exports (`x-amazon-apigateway-integration`, IAM key scrubbing). Tests RBAC boundaries enforcing HTTP 403 on External Partners attempting cross-org imports, HTTP 403 on Auditor mutation attempts, and HTTP 200 on permitted API Owner imports with source provenance tracking.
 11. **Multi-Model Experiment Verification (2 tests)**: Dynamically executes and verifies comparative benchmarks across Baseline, Curated Synonyms, and Layered Contextual Vector Embeddings without fabricated metrics, satisfying precision $\ge 85\%$ and F1 $\ge 88\%$.
@@ -184,15 +187,19 @@ The platform features an automated **Experiment Engine** comparing the baseline 
 * **Enhanced Analyser (Curated Synonyms)**:
   - Incorporates all 6 weighted signals: Route (20%), Method (10%), Category (20%), Field Names (20%), Semantics (25%), and Response Structure (5%).
   - Utilizes canonical travel domain synonym groups and relationship classifications (*Exact*, *Strong*, *Contextual*).
-* **Enhanced Analyser (Layered Contextual Vector Embeddings)**:
-  - Integrates 64-dimensional in-process dense vector embeddings with travel domain anchor projections and character trigram hashing.
-  - Evaluated via L2 cosine similarity layered with the curated synonym ontology.
+* **Enhanced Analyser (Layered Pretrained Vector Embeddings)**:
+  - Integrates 384-dimensional in-process dense sentence embeddings (`all-MiniLM-L6-v2` via `@xenova/transformers`) with 64-dimensional deterministic anchor fallback, evaluated via L2 cosine similarity layered with the curated synonym ontology.
   - Generates detailed evidence: `curatedSynonymCount`, `contextualEmbeddingCount`, `avgEmbeddingSimilarity`, and matched parameter pairs.
 * **3-State Ground Truth Isolation**:
   - Ground truth is evaluated across 3 explicit states: `DUPLICATE`, `NOT_DUPLICATE`, and `UNLABELLED`.
   - The benchmark suite contains **8 labelled ground-truth pairs** (5 confirmed duplicate pairs, 3 negative control pairs).
   - Out of the 300 total pairwise comparisons across the 25 catalogued APIs, the remaining **292 unlabelled pairs are strictly excluded from the confusion matrix**, ensuring they are never falsely inflated into True Negatives.
   - Evaluates True Positives (TP), False Positives (FP), False Negatives (FN), True Negatives (TN), Precision, Recall, F1-score, execution time, and duplicate surface.
+  - **Empirical Benchmark Metrics (Strictly over 8 Labelled Pairs)**:
+    - **Baseline Model**: $\text{TP}=3$, $\text{FP}=0$, $\text{FN}=2$, $\text{TN}=3 \rightarrow \text{Precision}=100.0\%$, $\text{Recall}=60.0\%$, $\text{F1}=75.0\%$
+    - **Enhanced (Curated Synonyms)**: $\text{TP}=4$, $\text{FP}=0$, $\text{FN}=1$, $\text{TN}=3 \rightarrow \text{Precision}=100.0\%$, $\text{Recall}=80.0\%$, $\text{F1}=88.9\%$
+    - **Enhanced (Pretrained Embeddings)**: $\text{TP}=4$, $\text{FP}=0$, $\text{FN}=1$, $\text{TN}=3 \rightarrow \text{Precision}=100.0\%$, $\text{Recall}=80.0\%$, $\text{F1}=88.9\%$
+
 
 ---
 

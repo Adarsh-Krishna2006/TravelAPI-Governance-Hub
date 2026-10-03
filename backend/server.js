@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import apiRouter from './routes.js';
 import { readDB, writeDB, getEnrichedApis } from './database.js';
 import { runFullAnalysis } from './analyser.js';
+import { initPretrainedPipeline, prewarmEmbeddingCache } from './embeddings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -65,6 +66,15 @@ if (process.env.NODE_ENV !== 'test') {
     try {
       const db = readDB();
       console.log(`DB Loaded: ${db.apis.length} APIs indexed, ${db.users.length} mock users, ${db.endpoints.length} endpoints.`);
+
+      // Pre-warm contextual embedding cache in background
+      initPretrainedPipeline().then(() => {
+        if (db.api_fields) {
+          prewarmEmbeddingCache(db.api_fields).catch(() => {});
+        }
+      }).catch(err => {
+        console.warn('Pretrained embeddings background init warning:', err.message);
+      });
       
       // Automatically trigger initial analysis on boot if none exists
       if (!db.duplicate_findings || db.duplicate_findings.length === 0) {

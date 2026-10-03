@@ -1,9 +1,14 @@
 // Contextual Semantic Vector Embedding Engine
-// In-process, deterministic semantic representation for schema field names and descriptions
-// with travel domain semantic anchors, subword character n-gram hashing, and L2 cosine similarity.
+// In-process pretrained sentence embedding model (all-MiniLM-L6-v2 via @xenova/transformers)
+// with deterministic semantic anchor and character-trigram hashing fallback encoder.
 
-const VECTOR_DIM = 64;
+const FALLBACK_DIM = 64;
+const PRETRAINED_DIM = 384;
 const embeddingCache = new Map();
+
+let pretrainedPipeline = null;
+let pretrainedLoadingPromise = null;
+let pretrainedAvailable = false;
 
 // Domain semantic anchor points (orthogonal bases for travel API concepts)
 const SEMANTIC_ANCHORS = {
@@ -59,25 +64,19 @@ function hashNgram(ngram, maxBuckets) {
 }
 
 /**
- * Encodes text into a normalized dense vector (Float32Array).
+ * Generates a deterministic 64-dimensional semantic-anchor + subword vector.
+ * Used as reliable in-process fallback whenever the pretrained transformer is unavailable.
  */
-export function generateEmbedding(name, description = '', semanticConcept = '') {
-  const cacheKey = `${name || ''}::${description || ''}::${semanticConcept || ''}`;
-  if (embeddingCache.has(cacheKey)) {
-    return embeddingCache.get(cacheKey);
-  }
-
-  const vec = new Float32Array(VECTOR_DIM);
+function generateDeterministicFallbackEmbedding(name, description = '', semanticConcept = '') {
+  const vec = new Float32Array(FALLBACK_DIM);
   const { tokens, cleanName } = normalizeFieldTokens(name, description);
 
-  // If semanticConcept is supplied, add its tokens to token list for anchor projection
   if (semanticConcept) {
     const conceptTokens = semanticConcept.toLowerCase().split(/[^a-z0-9]/).filter(Boolean);
     tokens.push(...conceptTokens);
   }
 
   if (tokens.length === 0 && !semanticConcept) {
-    embeddingCache.set(cacheKey, vec);
     return vec;
   }
 
@@ -87,7 +86,6 @@ export function generateEmbedding(name, description = '', semanticConcept = '') 
     const keywords = SEMANTIC_ANCHORS[concept];
     let matchWeight = 0;
 
-    // Direct concept equality gives strong anchor weight
     if (semanticConcept && (semanticConcept === concept || concept.includes(semanticConcept) || semanticConcept.includes(concept))) {
       matchWeight += 4.0;
     }
@@ -96,7 +94,6 @@ export function generateEmbedding(name, description = '', semanticConcept = '') 
       if (keywords.includes(token)) {
         matchWeight += 2.0;
       } else {
-        // Substring / stem match
         for (const kw of keywords) {
           if (token.startsWith(kw) || kw.startsWith(token)) {
             matchWeight += 1.0;
@@ -113,10 +110,9 @@ export function generateEmbedding(name, description = '', semanticConcept = '') 
     }
   }
 
-
   // 2. Character Tri-gram Morphological Hashing (dimensions 32 to 63)
   const subwordOffset = 32;
-  const subwordDims = VECTOR_DIM - subwordOffset;
+  const subwordDims = FALLBACK_DIM - subwordOffset;
 
   for (const token of tokens) {
     const padded = `^${token}$`;
@@ -127,7 +123,7 @@ export function generateEmbedding(name, description = '', semanticConcept = '') 
     }
   }
 
-  // 3. Name-weight amplification (direct name tokens carry heavier weight than descriptions)
+  // 3. Name-weight amplification
   const nameTokens = cleanName.split(/\s+/).filter(Boolean);
   for (const nTok of nameTokens) {
     const bucket = hashNgram(nTok, subwordDims);
@@ -136,19 +132,122 @@ export function generateEmbedding(name, description = '', semanticConcept = '') 
 
   // 4. L2 Normalization (unit length)
   let norm = 0;
-  for (let i = 0; i < VECTOR_DIM; i++) {
+  for (let i = 0; i < FALLBACK_DIM; i++) {
     norm += vec[i] * vec[i];
   }
   norm = Math.sqrt(norm);
 
   if (norm > 0) {
-    for (let i = 0; i < VECTOR_DIM; i++) {
+    for (let i = 0; i < FALLBACK_DIM; i++) {
       vec[i] /= norm;
     }
   }
 
+  return vec;
+}
+
+/**
+ * Initializes the @xenova/transformers pipeline in-process using Xenova/all-MiniLM-L6-v2.
+ */
+export async function initPretrainedPipeline() {
+  if (pretrainedAvailable && pretrainedPipeline) return pretrainedPipeline;
+  if (pretrainedLoadingPromise) return pretrainedLoadingPromise;
+
+  pretrainedLoadingPromise = (async () => {
+    try {
+      const { pipeline, env } = await import('@xenova/transformers');
+      if (env) {
+        env.allowRemoteModels = true;
+      }
+      pretrainedPipeline = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
+      pretrainedAvailable = true;
+      return pretrainedPipeline;
+    } catch (err) {
+      console.warn('[Embeddings] Pretrained model initialization deferred; falling back to deterministic anchor encoder:', err.message);
+      pretrainedAvailable = false;
+      return null;
+    }
+  })();
+
+  return pretrainedLoadingPromise;
+}
+
+/**
+ * Indicates whether the pretrained MiniLM model has been successfully loaded into memory.
+ */
+export function isPretrainedModelLoaded() {
+  return pretrainedAvailable && pretrainedPipeline !== null;
+}
+
+/**
+ * Pre-warms the in-memory embedding cache with pretrained vectors for catalog schema fields.
+ */
+export async function prewarmEmbeddingCache(fields = []) {
+  if (!fields || fields.length === 0) return;
+  const pipe = await initPretrainedPipeline();
+  if (!pipe) return;
+
+  for (const field of fields) {
+    const name = field.name || '';
+    const desc = field.description || '';
+    const concept = field.semanticConcept || '';
+    const cacheKey = `${name}::${desc}::${concept}`;
+    if (!embeddingCache.has(cacheKey)) {
+      try {
+        const text = [name, concept, desc].filter(Boolean).join(': ');
+        const output = await pipe(text, { pooling: 'mean', normalize: true });
+        embeddingCache.set(cacheKey, new Float32Array(output.data));
+      } catch {
+        embeddingCache.set(cacheKey, generateDeterministicFallbackEmbedding(name, desc, concept));
+      }
+    }
+  }
+}
+
+/**
+ * Encodes text into a normalized dense vector (Float32Array).
+ * Synchronous lookup from cache with deterministic fallback.
+ */
+export function generateEmbedding(name = '', description = '', semanticConcept = '') {
+  const cacheKey = `${name || ''}::${description || ''}::${semanticConcept || ''}`;
+  if (embeddingCache.has(cacheKey)) {
+    return embeddingCache.get(cacheKey);
+  }
+
+  // Synchronous generation via deterministic anchor encoder
+  const vec = generateDeterministicFallbackEmbedding(name, description, semanticConcept);
   embeddingCache.set(cacheKey, vec);
   return vec;
+}
+
+/**
+ * Asynchronously generates an embedding, utilizing pretrained all-MiniLM-L6-v2 if loaded.
+ */
+export async function generateEmbeddingAsync(name = '', description = '', semanticConcept = '') {
+  const cacheKey = `${name || ''}::${description || ''}::${semanticConcept || ''}`;
+  if (embeddingCache.has(cacheKey)) {
+    return embeddingCache.get(cacheKey);
+  }
+
+  try {
+    const pipe = await initPretrainedPipeline();
+    if (pipe) {
+      const text = [name, semanticConcept, description].filter(Boolean).join(': ');
+      if (!text.trim()) {
+        const emptyVec = new Float32Array(PRETRAINED_DIM);
+        embeddingCache.set(cacheKey, emptyVec);
+        return emptyVec;
+      }
+      const output = await pipe(text, { pooling: 'mean', normalize: true });
+      const vec = new Float32Array(output.data);
+      embeddingCache.set(cacheKey, vec);
+      return vec;
+    }
+  } catch (err) {
+    console.warn('[Embeddings] generateEmbeddingAsync fallback:', err.message);
+  }
+
+  return generateEmbedding(name, description, semanticConcept);
 }
 
 /**
@@ -156,14 +255,13 @@ export function generateEmbedding(name, description = '', semanticConcept = '') 
  * Returns value between 0.0 and 1.0.
  */
 export function computeCosineSimilarity(vecA, vecB) {
-  if (!vecA || !vecB || vecA.length !== vecB.length) return 0.0;
+  if (!vecA || !vecB || vecA.length !== vecB.length || vecA.length === 0) return 0.0;
 
   let dotProduct = 0;
   for (let i = 0; i < vecA.length; i++) {
     dotProduct += vecA[i] * vecB[i];
   }
 
-  // Vectors are L2 normalized, so dot product is directly cosine similarity
   return Math.max(0.0, Math.min(1.0, Math.round(dotProduct * 1000) / 1000));
 }
 
@@ -172,6 +270,7 @@ export function computeCosineSimilarity(vecA, vecB) {
  */
 export function calculateContextualFieldSimilarity(fieldA, fieldB) {
   try {
+    if (!fieldA || !fieldB || (!fieldA.name && !fieldB.name)) return 0.0;
     const vecA = generateEmbedding(fieldA?.name || '', fieldA?.description || '', fieldA?.semanticConcept || '');
     const vecB = generateEmbedding(fieldB?.name || '', fieldB?.description || '', fieldB?.semanticConcept || '');
     return computeCosineSimilarity(vecA, vecB);
@@ -185,10 +284,14 @@ export function calculateContextualFieldSimilarity(fieldA, fieldB) {
  * Returns cache size and diagnostic statistics.
  */
 export function getEmbeddingCacheStats() {
+  const sampleVector = embeddingCache.values().next().value;
+  const currentDim = sampleVector ? sampleVector.length : (pretrainedAvailable ? PRETRAINED_DIM : FALLBACK_DIM);
+
   return {
     cachedVectorsCount: embeddingCache.size,
-    dimensions: VECTOR_DIM,
-    engine: 'ContextualDenseVectorEngine'
+    dimensions: currentDim,
+    engine: pretrainedAvailable ? 'all-MiniLM-L6-v2 (ONNX in-process)' : 'ContextualDenseVectorEngine (Deterministic Fallback)',
+    pretrainedLoaded: pretrainedAvailable
   };
 }
 
@@ -200,8 +303,7 @@ export function clearEmbeddingCache() {
 }
 
 export const cosineSimilarity = computeCosineSimilarity;
+
 export function generateFieldEmbedding(field) {
   return generateEmbedding(field?.name || '', field?.description || '', field?.semanticConcept || '');
 }
-
-
