@@ -1,0 +1,81 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "AWS Payment Gateway Gateway Service",
+    "description": "Amazon API Gateway REST API export for Travel Payment Processing.",
+    "version": "1.0.0"
+  },
+  "x-amazon-apigateway-endpoint-configuration": {
+    "types": ["REGIONAL"]
+  },
+  "paths": {
+    "/payments/charge": {
+      "post": {
+        "summary": "Process customer card payment charge",
+        "operationId": "processPaymentCharge",
+        "parameters": [
+          {
+            "name": "amount",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "currency",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "customerId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "x-amazon-apigateway-integration": {
+          "uri": "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:processPayment/invocations",
+          "httpMethod": "POST",
+          "type": "aws_proxy",
+          "credentials": "arn:aws:iam::123456789012:role/aws_apigateway_super_secret_role"
+        },
+        "responses": {
+          "200": {
+            "description": "Payment successfully authorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "paymentId": { "type": "string" },
+                    "status": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "api_key": {
+        "type": "apiKey",
+        "name": "x-api-key",
+        "in": "header"
+      }
+    }
+  },
+  "security": [
+    {
+      "api_key": ["AKIAIOSFODNN7EXAMPLE:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"]
+    }
+  ]
+}

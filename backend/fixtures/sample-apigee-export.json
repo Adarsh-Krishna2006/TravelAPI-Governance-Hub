@@ -1,0 +1,46 @@
+{
+  "name": "apigee-flight-itinerary-proxy",
+  "revision": "4",
+  "basepaths": ["/apigee/v1/flights"],
+  "description": "Apigee Edge gateway proxy for Flight Itinerary search and reservation.",
+  "proxyEndpoints": [
+    {
+      "name": "default",
+      "endpoint": "/apigee/v1/flights",
+      "httpMethods": ["GET", "POST"],
+      "flows": [
+        {
+          "name": "SearchFlightsFlow",
+          "condition": "(proxy.pathsuffix MatchesPath \"/search\") and (request.verb = \"GET\")",
+          "description": "Search available flight itineraries"
+        },
+        {
+          "name": "BookFlightFlow",
+          "condition": "(proxy.pathsuffix MatchesPath \"/reserve\") and (request.verb = \"POST\")",
+          "description": "Reserve flight seats"
+        }
+      ]
+    }
+  ],
+  "targetEndpoints": [
+    {
+      "name": "default",
+      "url": "https://flight-backend.travelsphere.internal/flights"
+    }
+  ],
+  "policies": [
+    {
+      "name": "VerifyAPIKey",
+      "type": "VerifyAPIKey",
+      "config": {
+        "APIKey": {
+          "ref": "request.header.apikey"
+        }
+      }
+    }
+  ],
+  "credentials": {
+    "client_id": "apigee_client_id_travel_prod_44321",
+    "client_secret": "apigee_secret_token_do_not_leak_998877"
+  }
+}

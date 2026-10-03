@@ -1,0 +1,50 @@
+{
+  "_format_version": "3.0",
+  "_transform": true,
+  "services": [
+    {
+      "name": "kong-hotel-reservations-service",
+      "url": "https://upstream.travelsphere.internal/hotel-bookings",
+      "routes": [
+        {
+          "name": "kong-create-booking-route",
+          "paths": ["/gateway/kong/hotel-bookings"],
+          "methods": ["POST"],
+          "strip_path": true
+        },
+        {
+          "name": "kong-get-booking-route",
+          "paths": ["/gateway/kong/hotel-bookings/:id"],
+          "methods": ["GET"],
+          "strip_path": false
+        }
+      ],
+      "plugins": [
+        {
+          "name": "key-auth",
+          "config": {
+            "key_names": ["apikey", "x-api-key"]
+          }
+        },
+        {
+          "name": "rate-limiting",
+          "config": {
+            "minute": 100,
+            "policy": "local"
+          }
+        }
+      ]
+    }
+  ],
+  "consumers": [
+    {
+      "username": "partner_developer",
+      "custom_id": "cust-98765",
+      "keyauth_credentials": [
+        {
+          "key": "kong_super_secret_partner_key_99887766"
+        }
+      ]
+    }
+  ]
+}

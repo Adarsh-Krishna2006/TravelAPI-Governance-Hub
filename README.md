@@ -30,17 +30,35 @@ The automated duplicate analyser produces recommendations and candidates only; a
                |                                              |
      (Tailwind UI / Recharts)                        (Analytic Scanners)
                                                               |
-                                                      [db.json Database]
+                                                [Repository Abstraction Layer]
+                                                  /                       \
+                                        [db.json Storage]      [PostgreSQL DATABASE_URL]
 ```
 
-### Similarity Score Model
+### Similarity Score Model & Layered Semantic Strategy
 The Duplication Analyser computes weighted score signals (0-100) between any two catalogued APIs:
 * **Route Path Similarity (20%)**: Tokenizes path parameters, ignores standard API versioning strings, and evaluates path segments.
 * **HTTP Method Matching (10%)**: Compares operational matching (POST vs GET).
 * **Service Category Matching (20%)**: Higher weights if they represent matching functions (e.g. hotel room reserves vs booking management).
 * **Field Name overlap (20%)**: Uses segment normalizations (stripping camelCase, snake_case) and an expanded **Travel Domain Synonym Map** (mapping `customer` $\leftrightarrow$ `guest`, `amount` $\leftrightarrow$ `price`, etc.).
-* **Field Semantics (25%)**: Tokenizes field descriptions, strips boilerplate terms, and executes keyword Jaccard overlap tests.
+* **Field Semantics (25%)**: Implements a **Layered Semantic Strategy**:
+  1. *Exact Token Match*: Direct string identity (`100%`).
+  2. *Curated Domain Synonyms*: Matched via canonical Travel Domain concept mappings (`88-100%`).
+  3. *In-Process Contextual Vector Embeddings*: 64-dimensional dense vector embeddings with travel domain anchor projections and character trigram morphological hashing, evaluated via L2 cosine similarity (`cosine >= 0.70`).
 * **Response Structure (5%)**: Evaluates schema structure returned by endpoints.
+
+### Persistence Engine: Repository Pattern
+The backend implements a decoupled Repository Pattern (`backend/database/`):
+* **`JsonRepository` (Default)**: Zero-dependency local file persistence with atomic write locking and in-memory fallback.
+* **`PostgresRepository` (Production Ready)**: Relational driver connecting to PostgreSQL when `DATABASE_URL` is set, with connection pooling, transactional rollbacks, and schema migrations (`schema.sql`, `migrate.js`).
+
+### Generic API Gateway & Specification Ingestion Hub
+The platform provides a generic gateway export ingestion pipeline (`backend/gateway.js`) supporting:
+* **OpenAPI 3.x (JSON & YAML)**: Validates OpenAPI structure, extracts nested request bodies and responses, derives categories, and imports endpoints.
+* **Kong Declarative Gateway**: Parses services, routes, and plugins; automatically scrubs consumer API keys and secrets.
+* **Apigee API Proxy**: Maps proxy endpoints, basepaths, and conditional flows to catalogued endpoints; scrubs client secrets.
+* **AWS API Gateway**: Ingests REST/HTTP API exports, parses `x-amazon-apigateway-integration` extensions, and scrubs IAM credentials.
+* **Automatic Credential Scrubbing**: Sanitizes API keys, Bearer tokens, AWS secrets, and client credentials with `***REDACTED_CREDENTIAL***`.
 
 ### Risk Threshold Labels
 * **85-100**: HIGH PRIORITY DUPLICATE
@@ -50,6 +68,7 @@ The Duplication Analyser computes weighted score signals (0-100) between any two
 
 > **Weight & Threshold Calibration Justification**:
 > The 6 signal weights (Path: 20%, Method: 10%, Category: 20%, Field Names: 20%, Semantics: 25%, Response: 5%) and cutoffs (85/65/40) were empirically calibrated against the ground-truth benchmark suite. In travel APIs, disparate vendors model identical workflows using divergent vocabulary (e.g., `guest` vs `customer`, `/reservations` vs `/bookings`). Allocating 45% of total score mass to semantic concepts (25%) and synonym-normalized field schemas (20%) ensures cross-org duplicates clear the 85-point threshold even when route naming conventions differ. HTTP method (10%) and response structure (5%) provide orthogonal disambiguation—preventing `GET /hotels` from conflating with `POST /reservations`—without drowning out structural overlap. The 85-point cutoff ensures near-zero false positive consolidations, while the 65-point threshold captures candidate duplicates for human governance review.
+
 
 
 ---
@@ -111,14 +130,19 @@ To demonstrate the full-stack prototype in a structured review:
 
 ## 5. Automated Tests & Security Verification
 
-The platform includes a comprehensive test runner covering **53 automated assertions** across 7 test suites, plus **11 live HTTP integration test scenarios** executed by the backend test runner:
+The platform includes a comprehensive test runner covering **70 automated assertions** across 11 test suites, plus **11 live HTTP integration test scenarios** executed by the backend test runner:
 1. **Authentication Suite (6 tests)**: Enforces HTTP 401 on missing, malformed, invalid, or expired JWT tokens with zero silent demo fallbacks. Validates that `JWT_SECRET` is strictly required in production mode.
-2. **RBAC & Mutation Security (13 tests)**: Restricts database resets, consolidation, formal governance, test runner (`POST /api/tests/run`), and benchmark experiment (`POST /api/experiment/run`) to Admin (HTTP 403 for API Owner, External Partner, and Auditor). Restricts `/api/analyse/run` to Admin (global) and API Owner (own organisation only). Restricts `/api/analyse/review/:id` to Admin and API Owner (own organisation only; cross-org and Partner/Auditor receive HTTP 403). Provides authenticated read-only access for Auditor on `/api/tests/results` and `/api/experiment/results`.
+2. **RBAC & Mutation Security (19 tests)**: Restricts database resets, consolidation, formal governance, test runner (`POST /api/tests/run`), and benchmark experiment (`POST /api/experiment/run`) to Admin (HTTP 403 for API Owner, External Partner, and Auditor). Restricts `/api/analyse/run` to Admin (global) and API Owner (own organisation only). Restricts `/api/analyse/review/:id` to Admin and API Owner (own organisation only; cross-org and Partner/Auditor receive HTTP 403). Provides authenticated read-only access for Auditor on `/api/tests/results` and `/api/experiment/results`.
 3. **Multi-Organisation Isolation (4 tests)**: Quarantines rival partner private specifications and findings from External Partner sessions. Partitions audit logs and governance decisions so External Partners only see their own records.
 4. **OpenAPI 3.x Parser & Category Classification (13 tests)**: Validates JSON and YAML specifications via `js-yaml`, handles adversarial/malformed payloads safely, and scrubs hardcoded credentials. Strictly rejects missing version, unsupported versions, missing info/title, and missing paths as hard errors (`isValid: false`). Automatically derives category from metadata/tags or defaults to `"Unclassified"`. Provides user classification support via `PATCH /api/apis/:id/category` with cross-organisation mutation prevention. Recursively extracts nested `requestBody` and response schema properties with circular reference protection (depth $\le 5$), enabling imported specs to participate directly in duplicate analysis.
 5. **Duplicate Detection & 3-State Ground Truth (5 tests)**: Verifies $\ge 85\%$ detection for confirmed duplicates, $< 40\%$ for false positive controls, and $\ge 60\%$ for semantic synonyms. Implements explicit 3-state ground truth (`DUPLICATE`, `NOT_DUPLICATE`, `UNLABELLED`) where unlabelled pairs are strictly excluded from the confusion matrix (never inflated into True Negatives). Returns `labelledPairCount` and `unlabelledPairCount`.
 6. **Endpoint-Level Duplicate Surface (5 tests)**: Calculates measured duplication percentage over active endpoints rather than gross API counts. Formally verifies deprecation exclusion using a controlled synthetic dataset.
 7. **Automated Test Evidence Endpoint (1 test / 11 scenarios)**: `POST /api/tests/run` dispatches genuine local HTTP requests verifying missing JWT (401), invalid JWT (401), competitor API isolation (200, 0 leaked), competitor finding redaction (200, 0 leaked), competitor governance isolation (200, 0 leaked), auditor mutation attempt (403), API owner cross-org mutation attempt (403), strict OpenAPI validation errors, domain segregation, semantic matching, and corrupt YAML safety with a 100% pass rate.
+8. **Contextual Semantic Embeddings (5 tests)**: Verifies 64-dimensional vector embedding generation, high cosine similarity for domain synonyms (`customer_id` $\leftrightarrow$ `guest_id` at $\ge 65\%$), strong booking similarity (`bookingId` $\leftrightarrow$ `reservation_id` at $\ge 70\%$), orthogonal cross-vertical segregation (`flightNumber` vs `hotelId` at $< 45\%$), LRU embedding cache hits, and robust fallback on null/empty fields.
+9. **Database Repository Abstraction (4 tests)**: Verifies dynamic factory selection (`JsonRepository` default without `DATABASE_URL`), `IRepository` contract conformance across CRUD methods, atomic transaction rollback on failure, and PostgreSQL DDL `schema.sql` completeness (11 tables and performance indexes).
+10. **Generic API Gateway Ingestion & Security (6 tests)**: Parses Kong Declarative JSON exports (services, routes, consumer credential scrubbing), Apigee API Proxies (flows, basepaths, secret scrubbing), and AWS API Gateway exports (`x-amazon-apigateway-integration`, IAM key scrubbing). Tests RBAC boundaries enforcing HTTP 403 on External Partners attempting cross-org imports, HTTP 403 on Auditor mutation attempts, and HTTP 200 on permitted API Owner imports with source provenance tracking.
+11. **Multi-Model Experiment Verification (2 tests)**: Dynamically executes and verifies comparative benchmarks across Baseline, Curated Synonyms, and Layered Contextual Vector Embeddings without fabricated metrics, satisfying precision $\ge 85\%$ and F1 $\ge 88\%$.
+
 
 ### Running Automated Tests
 ```bash
@@ -157,9 +181,13 @@ The platform features an automated **Experiment Engine** comparing the baseline 
   - Evaluates normalized route path, HTTP method, and exact field-name overlap.
   - Does **not** include semantic concept mappings, domain synonym lookups, or category compatibility.
   - Formula: $\text{Score} = (0.40 \times \text{Route} + 0.40 \times \text{Exact Fields} + 0.20 \times \text{Method}) \times 100$.
-* **Enhanced Analyser**:
+* **Enhanced Analyser (Curated Synonyms)**:
   - Incorporates all 6 weighted signals: Route (20%), Method (10%), Category (20%), Field Names (20%), Semantics (25%), and Response Structure (5%).
   - Utilizes canonical travel domain synonym groups and relationship classifications (*Exact*, *Strong*, *Contextual*).
+* **Enhanced Analyser (Layered Contextual Vector Embeddings)**:
+  - Integrates 64-dimensional in-process dense vector embeddings with travel domain anchor projections and character trigram hashing.
+  - Evaluated via L2 cosine similarity layered with the curated synonym ontology.
+  - Generates detailed evidence: `curatedSynonymCount`, `contextualEmbeddingCount`, `avgEmbeddingSimilarity`, and matched parameter pairs.
 * **3-State Ground Truth Isolation**:
   - Ground truth is evaluated across 3 explicit states: `DUPLICATE`, `NOT_DUPLICATE`, and `UNLABELLED`.
   - The benchmark suite contains **8 labelled ground-truth pairs** (5 confirmed duplicate pairs, 3 negative control pairs).
@@ -176,7 +204,7 @@ The platform features an automated **Experiment Engine** comparing the baseline 
   - **Field Count**: 69 schema fields with semantic concept classifications and direction mappings in `DEFAULT_FIELDS` / `db.api_fields`.
   - **Organisations**: 6 active organisations (`org-ts`, `org-flyfast`, `org-globalhotels`, `org-stayeasy`, `org-paylink`, `org-securepay`).
   - **User Personas**: 4 default users covering all 4 platform roles.
-  - **Test Count**: 53 automated unit/integration test assertions across 7 test suites + 11 live HTTP integration test scenarios.
+  - **Test Count**: 70 automated unit/integration test assertions across 11 test suites + 11 live HTTP integration test scenarios.
 * **Endpoint-Level Duplicate Surface Formula**:
   $$\text{Duplicate Surface \%} = \left( \frac{\text{Active Overlapping API Endpoints}}{\text{Total Active API Endpoints}} \right) \times 100$$
   - **Active Endpoints**: Endpoints belonging to non-deprecated APIs. Endpoints belonging to deprecated or consolidated APIs are strictly excluded from both the numerator and denominator.

@@ -451,3 +451,7 @@ export function resetDB() {
   writeDB(defaultDB);
   return defaultDB;
 }
+
+// Export Database Repository Abstraction
+export { createRepository, getRepository, IRepository, JsonRepository, PostgresRepository } from './database/index.js';
+

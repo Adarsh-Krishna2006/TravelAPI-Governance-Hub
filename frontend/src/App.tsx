@@ -80,10 +80,14 @@ export default function App() {
   const [filterGovernance, setFilterGovernance] = useState('');
   const [filterVisibility, setFilterVisibility] = useState('');
 
-  // OpenAPI Import Form State
+  // OpenAPI & Gateway Ingestion Form State
   const [importContent, setImportContent] = useState('{\n  "openapi": "3.0.0",\n  "info": {\n    "title": "StayEasy Room Reserve API",\n    "version": "1.0.0"\n  },\n  "paths": {\n    "/api/v1/reservations": {\n      "post": {\n        "summary": "StayEasy partner room space reservation",\n        "requestBody": {\n          "content": {\n            "application/json": {\n              "schema": { "properties": { "reservation_id": { "type": "string" }, "guest_id": { "type": "string" }, "amount": { "type": "number" } } }\n            }\n          }\n        }\n      }\n    }\n  }\n}');
   const [importFormat, setImportFormat] = useState('JSON');
+  const [importSourceGateway, setImportSourceGateway] = useState('auto');
+  const [importTargetOrg, setImportTargetOrg] = useState('org-ts');
   const [importLogs, setImportLogs] = useState<string[]>([]);
+  const [previewData, setPreviewData] = useState<any>(null);
+  const [isSubmittingImport, setIsSubmittingImport] = useState(false);
 
   // Governance Inputs
   const [govReason, setGovReason] = useState('');
@@ -240,6 +244,55 @@ export default function App() {
       setErrorMsg(err.message);
     }
   };
+
+  // Gateway Export Preview (Validation & Credential Scrubbing)
+  const handlePreviewGateway = async () => {
+    setImportLogs([]);
+    setPreviewData(null);
+    try {
+      const res = await fetch('/api/gateway/preview', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${authToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: importContent, formatHint: importSourceGateway })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Gateway preview failed');
+      setImportLogs(data.logs || []);
+      setPreviewData(data);
+      if (data.isValid) setInfoMsg(`Gateway export parsed (${data.format?.toUpperCase()}) - ${data.scrubbedCount || 0} credential(s) scrubbed.`);
+    } catch (err: any) {
+      setErrorMsg(err.message);
+    }
+  };
+
+  // Gateway Ingestion Commit
+  const handleIngestGateway = async () => {
+    setIsSubmittingImport(true);
+    setImportLogs([]);
+    try {
+      const res = await fetch('/api/gateway/ingest', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${authToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: importContent,
+          formatHint: importSourceGateway,
+          organisationId: currentUser?.role === 'Admin' ? importTargetOrg : currentUser?.organisationId
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Gateway ingestion failed');
+      setImportLogs(data.logs || []);
+      setPreviewData(null);
+      await fetchData();
+      setInfoMsg(`Successfully ingested ${data.ingestedCount} API(s) from ${data.format?.toUpperCase()} export into catalogue!`);
+      setActiveTab('catalogue');
+    } catch (err: any) {
+      setErrorMsg(err.message);
+    } finally {
+      setIsSubmittingImport(false);
+    }
+  };
+
 
   // Review Finding
   const handleReviewFinding = async (findingId: string, status: string) => {
@@ -427,6 +480,27 @@ export default function App() {
     }
   };
 
+  const getMatchTypeBadge = (matchType?: string, embSim?: number) => {
+    switch (matchType) {
+      case 'exact':
+        return <span className="px-2 py-0.5 text-[9px] font-bold rounded bg-emerald-950 text-emerald-300 border border-emerald-800 uppercase">Exact Match</span>;
+      case 'curated_synonym':
+        return <span className="px-2 py-0.5 text-[9px] font-bold rounded bg-purple-950 text-purple-300 border border-purple-800 uppercase">Curated Synonym</span>;
+      case 'contextual_embedding':
+        return (
+          <span className="px-2 py-0.5 text-[9px] font-bold rounded bg-cyan-950 text-cyan-300 border border-cyan-800 uppercase flex items-center gap-1">
+            <Sparkles className="w-2.5 h-2.5 text-cyan-400" />
+            Vector Embedding {embSim ? `(${(embSim * 100).toFixed(0)}%)` : ''}
+          </span>
+        );
+      case 'token_overlap':
+        return <span className="px-2 py-0.5 text-[9px] font-bold rounded bg-slate-800 text-slate-300 border border-slate-700 uppercase">Token Overlap</span>;
+      default:
+        return null;
+    }
+  };
+
+
   // Computed Filtered Lists
   const filteredApis = apis.filter(api => {
     if (searchQuery) {
@@ -488,7 +562,7 @@ export default function App() {
 
             {currentUser?.role !== 'Auditor' && (
               <button onClick={() => setActiveTab('import')} className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === 'import' ? 'bg-sky-600 text-white shadow-lg shadow-sky-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'}`}>
-                <Upload className="w-4 h-4" /> Import OpenAPI
+                <Upload className="w-4 h-4" /> Gateway Ingest & Specs
               </button>
             )}
 
@@ -855,7 +929,27 @@ export default function App() {
                         ) : (
                           filteredApis.map(api => (
                             <tr key={api.id} className="hover:bg-slate-800/40">
-                              <td className="p-4 font-semibold text-slate-200"><div><p>{api.name}</p><span className="text-[10px] text-slate-500 font-normal">v{api.version}</span></div></td>
+                              <td className="p-4 font-semibold text-slate-200">
+                                <div>
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span>{api.name}</span>
+                                    {api.sourceGateway ? (
+                                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-800 uppercase tracking-wide">
+                                        {api.sourceGateway}
+                                      </span>
+                                    ) : api.sourceType === 'openapi' ? (
+                                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800 uppercase tracking-wide">
+                                        OpenAPI
+                                      </span>
+                                    ) : (
+                                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700 uppercase tracking-wide">
+                                        Manual
+                                      </span>
+                                    )}
+                                  </div>
+                                  <span className="text-[10px] text-slate-500 font-normal">v{api.version}</span>
+                                </div>
+                              </td>
                               <td className="p-4 font-mono text-slate-300">{api.gatewayBaseUrl}</td>
                               <td className="p-4 text-slate-300">{api.category}</td>
                               <td className="p-4">{ORGANISATIONS.find(o => o.id === api.organisationId)?.name}</td>
@@ -1006,37 +1100,157 @@ export default function App() {
             </div>
           )}
 
-          {/* OPENAPI IMPORT PAGE */}
+          {/* GATEWAY INGESTION & OPENAPI IMPORT PAGE */}
           {activeTab === 'import' && (
-            <div className="max-w-3xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6 shadow-2xl">
+            <div className="max-w-4xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6 shadow-2xl">
               <div>
-                <h2 className="text-xl font-bold">Import OpenAPI Specification</h2>
-                <p className="text-xs text-slate-400">Parse & validate JSON or YAML OpenAPI 3.x specifications into the catalogue.</p>
+                <h2 className="text-xl font-bold flex items-center gap-2">
+                  <Upload className="w-5 h-5 text-sky-400" />
+                  API Gateway & Specification Ingestion Hub
+                </h2>
+                <p className="text-xs text-slate-400">
+                  Ingest services, routes, and schemas from OpenAPI 3.x, Kong Declarative exports, Apigee Proxies, or AWS API Gateway exports with automatic credential scrubbing.
+                </p>
               </div>
 
-              <form onSubmit={handleParseSpec} className="space-y-4 text-xs">
-                <div className="flex gap-4">
-                  <div className="space-y-1 flex-1">
-                    <label className="text-slate-400 font-semibold">Format</label>
-                    <select value={importFormat} onChange={e => setImportFormat(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-slate-200">
-                      <option value="JSON">OpenAPI JSON</option>
-                      <option value="YAML">OpenAPI YAML</option>
+              <div className="space-y-4 text-xs">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-slate-400 font-semibold">Gateway / Spec Format</label>
+                    <select
+                      value={importSourceGateway}
+                      onChange={e => {
+                        const val = e.target.value;
+                        setImportSourceGateway(val);
+                        if (val === 'kong') {
+                          setImportContent('{\n  "_format_version": "3.0",\n  "services": [\n    {\n      "name": "kong-hotel-booking-service",\n      "url": "https://upstream.travelsphere.internal/hotel-bookings",\n      "routes": [\n        {\n          "name": "create-booking",\n          "paths": ["/gateway/kong/hotel-bookings"],\n          "methods": ["POST"]\n        }\n      ]\n    }\n  ],\n  "consumers": [\n    {\n      "username": "partner_dev",\n      "keyauth_credentials": [{ "key": "secret_key_12345" }]\n    }\n  ]\n}');
+                        } else if (val === 'apigee') {
+                          setImportContent('{\n  "name": "apigee-flight-itinerary-proxy",\n  "revision": "2",\n  "basepaths": ["/apigee/v1/flights"],\n  "proxyEndpoints": [\n    {\n      "name": "default",\n      "endpoint": "/apigee/v1/flights",\n      "flows": [\n        {\n          "name": "SearchFlights",\n          "condition": "(proxy.pathsuffix MatchesPath \\"/search\\") and (request.verb = \\"GET\\")"\n        }\n      ]\n    }\n  ],\n  "credentials": {\n    "client_secret": "apigee_secret_token_12345"\n  }\n}');
+                        } else if (val === 'aws') {
+                          setImportContent('{\n  "openapi": "3.0.1",\n  "info": {\n    "title": "AWS Payment Gateway Service",\n    "version": "1.0.0"\n  },\n  "paths": {\n    "/payments/charge": {\n      "post": {\n        "summary": "Process payment charge",\n        "parameters": [\n          { "name": "amount", "in": "query", "schema": { "type": "number" } },\n          { "name": "currency", "in": "query", "schema": { "type": "string" } }\n        ],\n        "x-amazon-apigateway-integration": {\n          "type": "aws_proxy",\n          "credentials": "arn:aws:iam::123456789012:role/my_secret_role"\n        }\n      }\n    }\n  }\n}');
+                        } else {
+                          setImportContent('{\n  "openapi": "3.0.0",\n  "info": {\n    "title": "StayEasy Room Reserve API",\n    "version": "1.0.0"\n  },\n  "paths": {\n    "/api/v1/reservations": {\n      "post": {\n        "summary": "StayEasy partner room space reservation",\n        "requestBody": {\n          "content": {\n            "application/json": {\n              "schema": { "properties": { "reservation_id": { "type": "string" }, "guest_id": { "type": "string" }, "amount": { "type": "number" } } }\n            }\n          }\n        }\n      }\n    }\n  }\n}');
+                        }
+                      }}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-slate-200"
+                    >
+                      <option value="auto">Auto-Detect Format</option>
+                      <option value="openapi">OpenAPI 3.x (JSON/YAML)</option>
+                      <option value="kong">Kong Gateway (Declarative JSON)</option>
+                      <option value="apigee">Apigee API Proxy (JSON)</option>
+                      <option value="aws">AWS API Gateway (Export JSON)</option>
                     </select>
+                  </div>
+
+                  {currentUser?.role === 'Admin' ? (
+                    <div className="space-y-1">
+                      <label className="text-slate-400 font-semibold">Target Organisation</label>
+                      <select
+                        value={importTargetOrg}
+                        onChange={e => setImportTargetOrg(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-slate-200"
+                      >
+                        {ORGANISATIONS.map(o => (
+                          <option key={o.id} value={o.id}>{o.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : (
+                    <div className="space-y-1">
+                      <label className="text-slate-400 font-semibold">Target Organisation</label>
+                      <div className="w-full bg-slate-950/60 border border-slate-800 rounded-xl p-2.5 text-slate-400 font-mono">
+                        {ORGANISATIONS.find(o => o.id === currentUser?.organisationId)?.name}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="space-y-1">
+                    <label className="text-slate-400 font-semibold">Credential Scrubbing</label>
+                    <div className="w-full bg-slate-950/60 border border-slate-800 rounded-xl p-2.5 text-emerald-400 flex items-center gap-1.5 font-medium">
+                      <ShieldCheck className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                      <span>Auto-Sanitize Secrets & Keys</span>
+                    </div>
                   </div>
                 </div>
 
                 <div className="space-y-1">
-                  <label className="text-slate-400 font-semibold">Specification Raw Content</label>
-                  <textarea rows={10} value={importContent} onChange={e => setImportContent(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 font-mono text-slate-300 focus:outline-none" />
+                  <div className="flex justify-between items-center">
+                    <label className="text-slate-400 font-semibold">Gateway Export / Spec Raw Content</label>
+                    <span className="text-[10px] text-slate-500 font-mono">JSON or YAML</span>
+                  </div>
+                  <textarea
+                    rows={11}
+                    value={importContent}
+                    onChange={e => setImportContent(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 font-mono text-slate-300 focus:outline-none text-[11px]"
+                  />
                 </div>
 
-                <button type="submit" className="w-full bg-sky-600 hover:bg-sky-500 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2"><Upload className="w-4 h-4" /> Parse & Validate Specification</button>
-              </form>
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <button
+                    type="button"
+                    onClick={handlePreviewGateway}
+                    className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold py-3 rounded-xl flex items-center justify-center gap-2 border border-slate-700"
+                  >
+                    <Eye className="w-4 h-4 text-sky-400" />
+                    Preview & Scrub Credentials
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isSubmittingImport}
+                    onClick={handleIngestGateway}
+                    className="flex-1 bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-sky-600/20"
+                  >
+                    <Upload className="w-4 h-4" />
+                    {isSubmittingImport ? 'Ingesting...' : 'Ingest & Commit to Catalogue'}
+                  </button>
+                </div>
+              </div>
+
+              {previewData && (
+                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3 text-xs">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                      <span className="font-bold text-slate-200">Specification Validated ({previewData.format?.toUpperCase()})</span>
+                    </div>
+                    {previewData.scrubbedCount > 0 ? (
+                      <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800 text-[10px] font-bold">
+                        {previewData.scrubbedCount} Credential(s) Scrubbed
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-400 text-[10px]">
+                        Clean Spec (0 Secrets Found)
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="p-3 bg-slate-900 rounded-lg border border-slate-800">
+                      <p className="text-[10px] text-slate-500 uppercase">Extracted Services</p>
+                      <p className="text-base font-bold text-sky-400">{previewData.apis?.length || 0}</p>
+                    </div>
+                    <div className="p-3 bg-slate-900 rounded-lg border border-slate-800">
+                      <p className="text-[10px] text-slate-500 uppercase">Extracted Endpoints</p>
+                      <p className="text-base font-bold text-indigo-400">{previewData.endpoints?.length || 0}</p>
+                    </div>
+                    <div className="p-3 bg-slate-900 rounded-lg border border-slate-800">
+                      <p className="text-[10px] text-slate-500 uppercase">Schema Fields Mapped</p>
+                      <p className="text-base font-bold text-emerald-400">{previewData.fields?.length || 0}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {importLogs.length > 0 && (
-                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2 text-xs font-mono">
-                  <p className="font-bold text-slate-300">Parser Validation Logs:</p>
-                  {importLogs.map((log, idx) => <p key={idx} className="text-slate-400">• {log}</p>)}
+                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-1.5 text-xs font-mono">
+                  <p className="font-bold text-slate-300">Gateway Processing & Validation Logs:</p>
+                  {importLogs.map((log, idx) => (
+                    <p key={idx} className={log.startsWith('Error') ? 'text-red-400' : log.includes('Scrubber') ? 'text-emerald-400' : 'text-slate-400'}>
+                      • {log}
+                    </p>
+                  ))}
                 </div>
               )}
             </div>
@@ -1144,44 +1358,110 @@ export default function App() {
                 </div>
               </div>
 
-              {/* 8 Evidence Panel Sections */}
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-5">
-                <h3 className="font-bold text-sm text-slate-200 border-b border-slate-800 pb-3">Evidence Dossier Panel</h3>
+              {/* Evidence Dossier Panel with Structural vs Semantic Separation */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-800 gap-2">
+                  <div>
+                    <h3 className="font-bold text-sm text-slate-100 flex items-center gap-2">
+                      <Sparkles className="w-4 h-4 text-sky-400" />
+                      Multi-Model Evidence Dossier & Explainability
+                    </h3>
+                    <p className="text-[11px] text-slate-400">
+                      Disaggregated verification comparing deterministic structural signals against layered contextual vector embeddings.
+                    </p>
+                  </div>
+                  {selectedFinding.semanticEvidence && (
+                    <div className="flex items-center gap-2 text-[10px]">
+                      <span className="px-2 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800">
+                        {selectedFinding.semanticEvidence.curatedSynonymCount || 0} Curated Synonyms
+                      </span>
+                      <span className="px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800">
+                        {selectedFinding.semanticEvidence.contextualEmbeddingCount || 0} Vector Embeddings
+                      </span>
+                    </div>
+                  )}
+                </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-xs">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 text-xs">
                   
-                  {/* Semantic Field Mappings & Relationships */}
-                  <div className="space-y-3">
-                    <h4 className="font-bold text-xs uppercase text-slate-400">Semantic Field Mappings Grid</h4>
-                    <div className="space-y-2">
-                      {selectedFinding.fieldMappings?.map((m: any, idx: number) => (
-                        <div key={idx} className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-1">
-                          <div className="flex justify-between items-center font-mono">
-                            <span className="text-sky-400 font-bold">{m.fieldA}</span>
-                            <span className="text-slate-500 font-bold">↔</span>
-                            <span className="text-amber-400 font-bold">{m.fieldB}</span>
-                          </div>
-                          <div className="flex justify-between items-center pt-1">
-                            <span className="text-[10px] text-slate-500">Concept: {m.semanticConceptA}</span>
-                            {getRelationshipBadge(m.relationship)}
-                          </div>
-                        </div>
+                  {/* Card 1: Structural Evidence */}
+                  <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
+                    <h4 className="font-bold text-xs uppercase text-slate-300 flex items-center justify-between">
+                      <span>1. Structural & Syntactic Evidence</span>
+                      <span className="text-[10px] text-sky-400 font-mono font-normal">Deterministic</span>
+                    </h4>
+                    
+                    <div className="grid grid-cols-2 gap-2 text-[11px]">
+                      <div className="p-2 bg-slate-900 rounded border border-slate-800">
+                        <span className="text-slate-500">Route Map Token Sim:</span>
+                        <p className="font-bold text-slate-200 text-sm">{selectedFinding.routeScore}%</p>
+                      </div>
+                      <div className="p-2 bg-slate-900 rounded border border-slate-800">
+                        <span className="text-slate-500">HTTP Method Alignment:</span>
+                        <p className="font-bold text-slate-200 text-sm">{selectedFinding.methodScore}%</p>
+                      </div>
+                      <div className="p-2 bg-slate-900 rounded border border-slate-800">
+                        <span className="text-slate-500">Domain Category Overlap:</span>
+                        <p className="font-bold text-slate-200 text-sm">{selectedFinding.categoryScore}%</p>
+                      </div>
+                      <div className="p-2 bg-slate-900 rounded border border-slate-800">
+                        <span className="text-slate-500">Response Schema Overlap:</span>
+                        <p className="font-bold text-slate-200 text-sm">{selectedFinding.responseScore}%</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5 pt-2 border-t border-slate-900">
+                      <p className="text-[10px] font-bold uppercase text-slate-500">Structural Checkmarks:</p>
+                      {selectedFinding.evidenceCheckmarks?.map((ev: string, idx: number) => (
+                        <p key={idx} className="text-[11px] text-slate-300 font-medium">
+                          {ev}
+                        </p>
                       ))}
                     </div>
                   </div>
 
-                  {/* Algorithm Score Breakdown */}
-                  <div className="space-y-3">
-                    <h4 className="font-bold text-xs uppercase text-slate-400">Algorithm Score Components Breakdown</h4>
-                    <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 grid grid-cols-2 gap-3 text-xs">
-                      <p><span className="text-slate-500">Route Map (20%):</span> <span className="font-bold text-slate-200">{selectedFinding.routeScore}%</span></p>
-                      <p><span className="text-slate-500">HTTP Method (10%):</span> <span className="font-bold text-slate-200">{selectedFinding.methodScore}%</span></p>
-                      <p><span className="text-slate-500">Category Area (20%):</span> <span className="font-bold text-slate-200">{selectedFinding.categoryScore}%</span></p>
-                      <p><span className="text-slate-500">Field names (20%):</span> <span className="font-bold text-slate-200">{selectedFinding.fieldNameScore}%</span></p>
-                      <p><span className="text-slate-500">Semantics def (25%):</span> <span className="font-bold text-slate-200">{selectedFinding.semanticScore}%</span></p>
-                      <p><span className="text-slate-500">Response schema (5%):</span> <span className="font-bold text-slate-200">{selectedFinding.responseScore}%</span></p>
+                  {/* Card 2: Contextual Semantic Evidence */}
+                  <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-bold text-xs uppercase text-slate-300">
+                        2. Contextual Semantic & Vector Evidence
+                      </h4>
+                      {selectedFinding.semanticEvidence?.avgEmbeddingSimilarity ? (
+                        <span className="text-[10px] text-cyan-400 font-mono font-medium">
+                          Avg Cosine: {(selectedFinding.semanticEvidence.avgEmbeddingSimilarity * 100).toFixed(1)}%
+                        </span>
+                      ) : null}
+                    </div>
+
+                    <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                      {selectedFinding.fieldMappings && selectedFinding.fieldMappings.length > 0 ? (
+                        selectedFinding.fieldMappings.map((m: any, idx: number) => (
+                          <div key={idx} className="bg-slate-900 p-2.5 rounded-lg border border-slate-800 space-y-1.5">
+                            <div className="flex justify-between items-center font-mono">
+                              <span className="text-sky-400 font-bold">{m.fieldA}</span>
+                              <span className="text-slate-500 font-bold">↔</span>
+                              <span className="text-amber-400 font-bold">{m.fieldB}</span>
+                            </div>
+                            <div className="flex flex-wrap items-center justify-between gap-1 pt-1 border-t border-slate-800/60">
+                              <span className="text-[10px] text-slate-400">Concept: {m.semanticConceptA || 'custom'}</span>
+                              <div className="flex items-center gap-1.5">
+                                {getMatchTypeBadge(m.matchType, m.embeddingSimilarity)}
+                                {getRelationshipBadge(m.relationship)}
+                              </div>
+                            </div>
+                            {m.reason && (
+                              <p className="text-[10px] text-slate-500 italic">{m.reason}</p>
+                            )}
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-[11px] text-slate-500 italic p-3 text-center">
+                          No overlapping semantic field mappings detected.
+                        </p>
+                      )}
                     </div>
                   </div>
+
                 </div>
 
                 {/* Governance Actions */}

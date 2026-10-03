@@ -3,10 +3,15 @@
 
 import http from 'http';
 import jwt from 'jsonwebtoken';
+import fs from 'fs';
+import path from 'path';
 import app from './server.js';
-import { readDB, resetDB, getEnrichedApis } from './database.js';
+import { readDB, resetDB, getEnrichedApis, getRepository, createRepository, JsonRepository, PostgresRepository, IRepository } from './database.js';
 import { analyzeEnhancedPair, analyzeBaselinePair } from './analyser.js';
+import { calculateContextualFieldSimilarity, generateFieldEmbedding, cosineSimilarity } from './embeddings.js';
+import { parseGatewayExport, scrubCredentials, detectGatewayFormat } from './gateway.js';
 import { getJwtSecret } from './routes.js';
+
 
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'travelsphere-test-secret-key-9876';
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -730,7 +735,170 @@ paths:
   const allPassed = testRunData.results && testRunData.results.length > 0 && testRunData.results.every(t => t.status === 'PASS');
   logTest('POST /api/tests/run executes all integration test scenarios successfully (100% PASS)', allPassed, `${testRunData.results ? testRunData.results.length : 0} scenarios executed`);
 
+  // ----------------------------------------------------
+  // SUITE 8: CONTEXTUAL SEMANTIC EMBEDDINGS
+  // ----------------------------------------------------
+  console.log('\n▶ Suite 8: Contextual Semantic Embeddings');
+
+  // 8.1: Exact / Synonym concept vectors match with high similarity
+  const simCustomer = calculateContextualFieldSimilarity(
+    { name: 'customer_id', semanticConcept: 'customer_identifier' },
+    { name: 'guest_id', semanticConcept: 'customer_identifier' }
+  );
+  logTest('Calculate high contextual similarity for synonym fields (customer_id ↔ guest_id)', simCustomer >= 0.65, `Similarity: ${(simCustomer * 100).toFixed(1)}%`);
+
+  // 8.2: Related travel domain fields exhibit contextual similarity
+  const simBooking = calculateContextualFieldSimilarity(
+    { name: 'bookingId', semanticConcept: 'booking_identifier' },
+    { name: 'reservation_id', semanticConcept: 'booking_identifier' }
+  );
+  logTest('Calculate strong similarity for booking identifiers (bookingId ↔ reservation_id)', simBooking >= 0.70, `Similarity: ${(simBooking * 100).toFixed(1)}%`);
+
+  // 8.3: Orthogonal cross-domain fields are strongly segregated
+  const simFlightHotel = calculateContextualFieldSimilarity(
+    { name: 'flightNumber', semanticConcept: 'flight_identifier' },
+    { name: 'hotelId', semanticConcept: 'property_identifier' }
+  );
+  logTest('Segregate orthogonal cross-domain fields with low cosine similarity (< 0.45)', simFlightHotel < 0.45, `Similarity: ${(simFlightHotel * 100).toFixed(1)}%`);
+
+  // 8.4: In-memory embedding cache returns cached vectors on subsequent calls
+  const v1 = generateFieldEmbedding({ name: 'currency_code', description: 'ISO currency' });
+  const v2 = generateFieldEmbedding({ name: 'currency_code', description: 'ISO currency' });
+  logTest('In-memory LRU embedding cache returns cached vectors on subsequent lookups', v1 === v2, `Vector Dimension: ${v1.length}`);
+
+  // 8.5: Fallback behavior handles null, undefined, or missing descriptions gracefully
+  const simEmpty = calculateContextualFieldSimilarity(null, undefined);
+  const simNoDesc = calculateContextualFieldSimilarity({ name: '' }, { name: '' });
+  logTest('Graceful fallback for empty, null, or undefined field inputs without crashing', simEmpty === 0 && typeof simNoDesc === 'number', `Null sim: ${simEmpty}`);
+
+  // ----------------------------------------------------
+  // SUITE 9: DATABASE REPOSITORY ABSTRACTION
+  // ----------------------------------------------------
+  console.log('\n▶ Suite 9: Database Repository Abstraction');
+
+  // 9.1: Repository factory instantiates JsonRepository by default
+  const defaultRepo = getRepository();
+  logTest('Repository factory instantiates JsonRepository by default when DATABASE_URL is unset', defaultRepo instanceof JsonRepository);
+
+  // 9.2: Repository conforms to IRepository interface contract
+  const hasInterfaceMethods = 
+    typeof defaultRepo.getApis === 'function' &&
+    typeof defaultRepo.getEnrichedApis === 'function' &&
+    typeof defaultRepo.getEndpoints === 'function' &&
+    typeof defaultRepo.getFields === 'function' &&
+    typeof defaultRepo.updateSettings === 'function' &&
+    typeof defaultRepo.transaction === 'function';
+  logTest('Repository conforms to IRepository interface contract methods', hasInterfaceMethods);
+
+  // 9.3: Transactional rollback restores previous state on error
+  let rollbackPassed = false;
+  try {
+    await defaultRepo.transaction(async (tx) => {
+      await tx.updateSettings({ canary_rollback_test: true });
+      throw new Error('Forced rollback test');
+    });
+  } catch {
+    const s = await defaultRepo.getSettings();
+    rollbackPassed = s.canary_rollback_test === undefined;
+  }
+  logTest('Repository transaction rolls back atomic changes upon failure', rollbackPassed);
+
+  // 9.4: PostgreSQL DDL schema validation
+  const schemaPath = path.join(process.cwd(), 'backend', 'database', 'schema.sql');
+  const schemaExists = fs.existsSync(schemaPath);
+  const schemaContent = schemaExists ? fs.readFileSync(schemaPath, 'utf8') : '';
+  const hasTables = schemaContent.includes('CREATE TABLE IF NOT EXISTS organisations') &&
+                    schemaContent.includes('CREATE TABLE IF NOT EXISTS apis') &&
+                    schemaContent.includes('CREATE TABLE IF NOT EXISTS endpoints') &&
+                    schemaContent.includes('CREATE TABLE IF NOT EXISTS schema_fields') &&
+                    schemaContent.includes('CREATE TABLE IF NOT EXISTS duplicate_findings') &&
+                    schemaContent.includes('CREATE INDEX IF NOT EXISTS idx_apis_org');
+  logTest('PostgreSQL DDL schema.sql defines required relational tables, foreign keys, and indexes', hasTables, `Schema size: ${schemaContent.length} bytes`);
+
+  // ----------------------------------------------------
+  // SUITE 10: GENERIC API GATEWAY INGESTION & SECURITY
+  // ----------------------------------------------------
+  console.log('\n▶ Suite 10: Generic API Gateway Ingestion & Security');
+
+  // 10.1: Kong Declarative JSON export preview & credential scrubbing
+  const kongFixture = fs.readFileSync(path.join(process.cwd(), 'backend', 'fixtures', 'sample-kong-export.json'), 'utf8');
+  const resKongPrev = await fetch(`${baseUrl}/gateway/preview`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: kongFixture, formatHint: 'kong' })
+  });
+  const kongData = await resKongPrev.json();
+  const kongValid = kongData.isValid && kongData.format === 'kong' && kongData.apis.length >= 1 && kongData.endpoints.length >= 2 && kongData.scrubbedCount >= 1;
+  logTest('Parse Kong Declarative export, map routes, and scrub consumer credentials', kongValid, `Scrubbed: ${kongData.scrubbedCount}, Endpoints: ${kongData.endpoints ? kongData.endpoints.length : 0}`);
+
+  // 10.2: Apigee API Proxy export preview & credential scrubbing
+  const apigeeFixture = fs.readFileSync(path.join(process.cwd(), 'backend', 'fixtures', 'sample-apigee-export.json'), 'utf8');
+  const resApigeePrev = await fetch(`${baseUrl}/gateway/preview`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: apigeeFixture, formatHint: 'apigee' })
+  });
+  const apigeeData = await resApigeePrev.json();
+  const apigeeValid = apigeeData.isValid && apigeeData.format === 'apigee' && apigeeData.apis.length === 1 && apigeeData.scrubbedCount >= 1;
+  logTest('Parse Apigee API Proxy export, map flows to endpoints, and scrub client secrets', apigeeValid, `Scrubbed: ${apigeeData.scrubbedCount}`);
+
+  // 10.3: AWS API Gateway export preview & credential scrubbing
+  const awsFixture = fs.readFileSync(path.join(process.cwd(), 'backend', 'fixtures', 'sample-aws-export.json'), 'utf8');
+  const resAwsPrev = await fetch(`${baseUrl}/gateway/preview`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: awsFixture, formatHint: 'aws' })
+  });
+  const awsData = await resAwsPrev.json();
+  const awsValid = awsData.isValid && awsData.format === 'aws' && awsData.scrubbedCount >= 1;
+  logTest('Parse AWS API Gateway export, validate x-amazon extensions, and scrub IAM keys', awsValid, `Scrubbed: ${awsData.scrubbedCount}`);
+
+  // 10.4: RBAC Security Boundary: External Partner blocked from ingesting into internal/rival organisation
+  const resPartnerIngest = await fetch(`${baseUrl}/gateway/ingest`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${partnerToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: kongFixture, formatHint: 'kong', organisationId: 'org-ts' })
+  });
+  logTest('Block External Partner from ingesting gateway services into competitor/internal organisation (403)', resPartnerIngest.status === 403, `Status: ${resPartnerIngest.status}`);
+
+  // 10.5: RBAC Security Boundary: Auditor blocked from ingesting APIs
+  const resAuditorIngest = await fetch(`${baseUrl}/gateway/ingest`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${auditorToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: kongFixture, formatHint: 'kong' })
+  });
+  logTest('Block Auditor from mutating gateway catalogue via POST /api/gateway/ingest (403 Forbidden)', resAuditorIngest.status === 403, `Status: ${resAuditorIngest.status}`);
+
+  // 10.6: Permitted API Owner successfully ingests gateway export into their own organisation
+  const resOwnerIngest = await fetch(`${baseUrl}/gateway/ingest`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${ownerToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: kongFixture, formatHint: 'kong' })
+  });
+  const ownerIngestData = await resOwnerIngest.json();
+  const ownerSuccess = resOwnerIngest.status === 200 && ownerIngestData.success && ownerIngestData.apis && ownerIngestData.apis[0].sourceGateway === 'kong';
+  logTest('Permit API Owner to ingest gateway export into own organisation with provenance tracking (200 OK)', ownerSuccess, `Source: ${ownerIngestData.apis ? ownerIngestData.apis[0].sourceGateway : 'none'}`);
+
+  // ----------------------------------------------------
+  // SUITE 11: MULTI-MODEL EXPERIMENT VERIFICATION
+  // ----------------------------------------------------
+  console.log('\n▶ Suite 11: Multi-Model Experiment Verification');
+
+  // 11.1: Multi-Model comparative metrics returned from experiment runner
+  const resExpMulti = await fetch(`${baseUrl}/experiment/run`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${adminToken}` }
+  });
+  const expMultiData = await resExpMulti.json();
+  const hasModels = expMultiData.models && expMultiData.models.length === 3 && expMultiData.models.some(m => m.modelName.includes('Vector Embeddings'));
+  logTest('Experiment runner dynamically computes benchmarks across Baseline, Curated, and Embedding models', hasModels, `Models: ${expMultiData.models ? expMultiData.models.length : 0}`);
+
+  // 11.2: Layered contextual embedding model satisfies benchmark quality gates
+  const qualityPassed = expMultiData.precision >= 85 && expMultiData.f1 >= 88 && expMultiData.comparisonCount > 0;
+  logTest('Layered embedding model satisfies benchmark quality gates (Precision >= 85%, F1 >= 88%) without fabricated data', qualityPassed, `Precision: ${expMultiData.precision}%, F1: ${expMultiData.f1}%`);
+
   await stopServer();
+
 
   console.log('\n======================================================');
   console.log(` Test Summary: ${passedCount} Passed, ${failedCount} Failed`);

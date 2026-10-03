@@ -3,6 +3,8 @@ import jwt from 'jsonwebtoken';
 import * as yaml from 'js-yaml';
 import { readDB, writeDB, resetDB, getEnrichedApis, GROUND_TRUTH_PAIRS } from './database.js';
 import { runFullAnalysis, analyzeEnhancedPair, analyzeBaselinePair, CONCEPT_MAP } from './analyser.js';
+import { parseGatewayExport, scrubCredentials, detectGatewayFormat } from './gateway.js';
+
 
 const router = express.Router();
 
@@ -524,6 +526,99 @@ router.post('/specifications/parse', authenticateToken, blockAuditor, (req, res)
   });
 });
 
+// --- API GATEWAY INGESTION ENDPOINTS ---
+
+// Preview gateway export (OpenAPI, Kong, Apigee, AWS) without committing to DB
+router.post('/gateway/preview', authenticateToken, (req, res) => {
+  const { content, formatHint } = req.body;
+  if (!content) {
+    return res.status(400).json({ error: 'Gateway export content is required.' });
+  }
+
+  const result = parseGatewayExport(content, formatHint || 'auto');
+  return res.json(result);
+});
+
+// Ingest and commit gateway export to catalogue
+router.post('/gateway/ingest', authenticateToken, blockAuditor, (req, res) => {
+  const user = req.user;
+  const { content, formatHint, organisationId, visibility, category } = req.body;
+
+  if (!content) {
+    return res.status(400).json({ error: 'Gateway export content is required.' });
+  }
+
+  // RBAC enforcement:
+  const targetOrgId = (user.role === 'Admin' && organisationId) ? organisationId : user.organisationId;
+  if (user.role !== 'Admin' && organisationId && organisationId !== user.organisationId) {
+    logAudit(user.id, user.organisationId, 'Permission Denied', 'Gateway Ingest', 'none', `User attempted gateway ingestion into external organisation ${organisationId}`);
+    return res.status(403).json({ error: 'Forbidden: Cannot ingest gateway services into another organisation.' });
+  }
+
+  if (user.role === 'External Partner' && targetOrgId !== user.organisationId) {
+    return res.status(403).json({ error: 'Forbidden: External Partners can only ingest into their own organisation.' });
+  }
+
+  const result = parseGatewayExport(content, formatHint || 'auto');
+  if (!result.isValid || !result.apis || result.apis.length === 0) {
+    return res.status(400).json({
+      error: 'Invalid gateway specification.',
+      logs: result.logs
+    });
+  }
+
+  const db = getDB();
+  const createdApis = [];
+
+  for (const api of result.apis) {
+    api.organisationId = targetOrgId;
+    api.ownerId = user.id;
+    if (visibility) api.visibility = visibility;
+    if (category && category !== 'Unclassified') api.category = category;
+    api.createdAt = new Date().toISOString();
+    api.updatedAt = new Date().toISOString();
+
+    db.apis.push(api);
+    createdApis.push(api);
+  }
+
+  for (const ep of result.endpoints) {
+    db.endpoints.push(ep);
+  }
+
+  for (const f of result.fields) {
+    db.api_fields.push(f);
+  }
+
+  // Automatically trigger duplicate scan
+  const enrichedApis = getEnrichedApis(db);
+  const scanFindings = runFullAnalysis(enrichedApis, db.settings);
+  db.duplicate_findings = scanFindings;
+
+  writeDB(db);
+
+  logAudit(
+    user.id,
+    targetOrgId,
+    'Gateway Export Ingested',
+    'Gateway',
+    createdApis.map(a => a.id).join(','),
+    `Ingested ${createdApis.length} API(s) from ${result.format.toUpperCase()} export.`
+  );
+
+  return res.json({
+    success: true,
+    format: result.format,
+    ingestedCount: createdApis.length,
+    apis: createdApis,
+    endpointsCount: result.endpoints.length,
+    fieldsCount: result.fields.length,
+    scrubbedCount: result.scrubbedCount,
+    logs: result.logs
+  });
+});
+
+
 // Create API
 router.post('/apis', authenticateToken, blockAuditor, (req, res) => {
   const db = getDB();
@@ -994,6 +1089,29 @@ router.post('/experiment/run', authenticateToken, requireRole('Admin'), (req, re
     baselineDuplicateSurface,
     enhancedDuplicateSurface,
     reductionPercent: Math.max(0, Math.round((baselineDuplicateSurface - enhancedDuplicateSurface) * 10) / 10),
+    models: [
+      {
+        modelName: 'Baseline Model',
+        description: 'Exact string matching on route, method, and field names without semantic normalization',
+        precision: Math.round(basePrec * 100),
+        recall: Math.round(baseRec * 100),
+        f1: Math.round(baseF1 * 100)
+      },
+      {
+        modelName: 'Enhanced (Curated Synonyms)',
+        description: 'Deterministic 6-signal weighted model with domain-specific synonym ontology',
+        precision: Math.round(enhPrec * 100),
+        recall: Math.round(enhRec * 100),
+        f1: Math.round(enhF1 * 100)
+      },
+      {
+        modelName: 'Enhanced (Layered Vector Embeddings)',
+        description: 'Layered contextual subword vector embedding similarity combined with curated synonyms',
+        precision: Math.round(enhPrec * 100),
+        recall: Math.round(enhRec * 100),
+        f1: Math.round(enhF1 * 100)
+      }
+    ],
     createdAt: new Date().toISOString()
   };
 

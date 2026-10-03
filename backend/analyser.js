@@ -1,4 +1,4 @@
-// TravelAPI Governance Hub - Dual Duplication Analysis Engine
+import { calculateContextualFieldSimilarity } from './embeddings.js';
 
 const SYNONYMS = {
   customer: ['guest', 'guests', 'client', 'clients', 'user', 'users', 'passenger', 'passengers', 'payer', 'payers', 'account', 'accounts', 'customer', 'customers'],
@@ -251,12 +251,47 @@ export function analyzeEnhancedPair(apiA, apiB, settings = {}) {
   const fieldsB = apiB.inputFields || [];
   const fieldMappings = [];
   let inputMatches = 0;
+  let curatedSynonymCount = 0;
+  let contextualEmbeddingCount = 0;
+  let totalEmbeddingSim = 0;
+  let embeddingSimCount = 0;
 
   for (const fA of fieldsA) {
     for (const fB of fieldsB) {
       const conceptA = fA.semanticConcept || CONCEPT_MAP[fA.name] || getSynonymGroup(fA.name);
       const conceptB = fB.semanticConcept || CONCEPT_MAP[fB.name] || getSynonymGroup(fB.name);
-      const rel = classifyRelationship(fA.name, fB.name, conceptA, conceptB);
+
+      const isExact = (fA.name || '').toLowerCase() === (fB.name || '').toLowerCase();
+      const isCurated = !isExact && (conceptA && conceptB && conceptA === conceptB);
+
+      const embSim = calculateContextualFieldSimilarity(fA, fB);
+      totalEmbeddingSim += embSim;
+      embeddingSimCount++;
+
+      let rel = 'Different';
+      let matchType = 'none';
+
+      if (isExact) {
+        rel = 'Exact Equivalent';
+        matchType = 'exact';
+      } else if (isCurated) {
+        rel = 'Strong Equivalent';
+        matchType = 'curated_synonym';
+        curatedSynonymCount++;
+      } else if (embSim >= 0.70) {
+        rel = embSim >= 0.85 ? 'Strong Equivalent' : 'Contextual Equivalent';
+        matchType = 'contextual_embedding';
+        contextualEmbeddingCount++;
+      } else {
+        const fallbackRel = classifyRelationship(fA.name, fB.name, conceptA, conceptB);
+        if (fallbackRel !== 'Different') {
+          rel = fallbackRel;
+          matchType = 'token_overlap';
+        } else if (embSim >= 0.50) {
+          rel = 'Related';
+          matchType = 'contextual_embedding';
+        }
+      }
 
       if (rel !== 'Different') {
         fieldMappings.push({
@@ -266,9 +301,17 @@ export function analyzeEnhancedPair(apiA, apiB, settings = {}) {
           semanticConceptA: conceptA,
           semanticConceptB: conceptB,
           relationship: rel,
-          similarityScore: rel === 'Exact Equivalent' ? 100 : rel === 'Strong Equivalent' ? 88 : 72,
-          reason: `Mapped via semantic concept (${conceptA} ↔ ${conceptB})`,
-          confidence: rel === 'Exact Equivalent' ? 1.0 : 0.85
+          matchType,
+          embeddingSimilarity: Math.round(embSim * 1000) / 1000,
+          similarityScore: rel === 'Exact Equivalent' ? 100 : (rel === 'Strong Equivalent' ? (matchType === 'curated_synonym' ? 88 : Math.round(embSim * 100)) : Math.round(embSim * 85)),
+          reason: matchType === 'exact' 
+            ? `Exact name match (${fA.name})`
+            : matchType === 'curated_synonym'
+            ? `Curated domain synonym (${conceptA} ↔ ${conceptB})`
+            : matchType === 'contextual_embedding'
+            ? `Contextual vector embedding cosine similarity (${(embSim * 100).toFixed(1)}%)`
+            : `Mapped via semantic concept (${conceptA} ↔ ${conceptB})`,
+          confidence: rel === 'Exact Equivalent' ? 1.0 : (matchType === 'curated_synonym' ? 0.95 : Math.round(embSim * 100) / 100)
         });
         inputMatches++;
         break;
@@ -281,7 +324,7 @@ export function analyzeEnhancedPair(apiA, apiB, settings = {}) {
   // If distinct verticals collide, dampen field score
   const fieldsScore = isVerticalMismatch ? rawFieldsScore * 0.5 : rawFieldsScore;
 
-  // 5. Semantic similarity (concept overlap)
+  // 5. Semantic similarity (concept overlap with layered contextual embedding fallback)
   let semanticMatchesSum = 0;
   let semanticCount = 0;
 
@@ -291,6 +334,12 @@ export function analyzeEnhancedPair(apiA, apiB, settings = {}) {
       const conceptB = fB.semanticConcept || CONCEPT_MAP[fB.name];
       if (conceptA && conceptB && conceptA === conceptB) {
         semanticMatchesSum += 1.0;
+        semanticCount++;
+        break;
+      }
+      const embSim = calculateContextualFieldSimilarity(fA, fB);
+      if (embSim >= 0.75) {
+        semanticMatchesSum += embSim;
         semanticCount++;
         break;
       }
@@ -347,6 +396,9 @@ export function analyzeEnhancedPair(apiA, apiB, settings = {}) {
   if (fieldMappings.some(m => m.semanticConceptA === 'monetary_amount')) evidenceCheckmarks.push(`✓ Amount/Price fields are equivalent`);
   if (fieldMappings.some(m => m.semanticConceptA === 'booking_identifier')) evidenceCheckmarks.push(`✓ Booking/Reservation identifiers are equivalent`);
   if (fieldMappings.some(m => m.semanticConceptA === 'transaction_identifier')) evidenceCheckmarks.push(`✓ Payment Transaction identifiers are equivalent`);
+  if (contextualEmbeddingCount > 0) evidenceCheckmarks.push(`✓ ${contextualEmbeddingCount} field parameter(s) matched via contextual vector embedding similarity`);
+
+  const avgEmbeddingSimilarity = embeddingSimCount > 0 ? Math.round((totalEmbeddingSim / embeddingSimCount) * 1000) / 1000 : 0;
 
   return {
     score,
@@ -359,7 +411,19 @@ export function analyzeEnhancedPair(apiA, apiB, settings = {}) {
     semanticScore: Math.round(semanticsScore * 100),
     responseScore: Math.round(outputScore * 100),
     fieldMappings,
-    evidenceCheckmarks
+    evidenceCheckmarks,
+    semanticEvidence: {
+      curatedSynonymCount,
+      contextualEmbeddingCount,
+      avgEmbeddingSimilarity,
+      matchedFieldPairs: fieldMappings.map(m => ({
+        fieldA: m.fieldA,
+        fieldB: m.fieldB,
+        matchType: m.matchType,
+        embeddingSimilarity: m.embeddingSimilarity,
+        confidence: m.confidence
+      }))
+    }
   };
 }
 
