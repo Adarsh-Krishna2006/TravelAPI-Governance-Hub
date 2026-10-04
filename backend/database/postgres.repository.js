@@ -35,6 +35,21 @@ export class PostgresRepository extends IRepository {
     return pool.query(text, params);
   }
 
+  /**
+   * ACID TRANSACTION RUNNER:
+   * 
+   * Architectural Design:
+   * Compound governance lifecycle mutations (such as formal consolidation: deprecating an API,
+   * updating endpoint routes, altering finding status to 'Consolidated', and appending audit logs)
+   * must execute atomically.
+   * 
+   * Implementation:
+   * 1. Acquires a dedicated client connection from the pg.Pool.
+   * 2. Issues 'BEGIN' to start an isolated transaction.
+   * 3. Executes all operations via PostgresTransactionClient.
+   * 4. Issues 'COMMIT' on success, or 'ROLLBACK' on any error, guaranteeing zero partial states.
+   * 5. Finally releases the client back to the pool to prevent connection leaks.
+   */
   async transaction(callback) {
     const pool = await this._getPool();
     const client = await pool.connect();

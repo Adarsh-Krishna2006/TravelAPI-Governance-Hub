@@ -1,6 +1,27 @@
 // Contextual Semantic Vector Embedding Engine
-// In-process pretrained sentence embedding model (all-MiniLM-L6-v2 via @xenova/transformers)
-// with deterministic semantic anchor and character-trigram hashing fallback encoder.
+/**
+ * ARCHITECTURAL DESIGN & EMBEDDING STRATEGY:
+ * 
+ * 1. REAL IN-PROCESS PRETRAINED MODEL (Tier 3):
+ *    - Model: 'Xenova/all-MiniLM-L6-v2' via @xenova/transformers.
+ *    - Dimension: 384-dimensional dense sentence embeddings.
+ *    - Execution: In-process ONNX Runtime (Node.js compatible).
+ *    - Privacy & Cost: 100% local inference with zero external API calls, zero token costs,
+ *      and zero enterprise data leakage to third-party endpoints.
+ *    - Pooling & Normalization: Mean pooling across token representations followed by L2 unit
+ *      normalization, enabling Cosine Similarity to be calculated via direct vector dot product.
+ * 
+ * 2. DETERMINISTIC FALLBACK ENCODER (Resilience Tier):
+ *    - Dimension: 64-dimensional dense vector.
+ *    - Architecture: 11 domain-specific semantic anchor bases (monetary, customer, booking, etc.)
+ *      combined with character tri-gram hash buckets for morphological robustness.
+ *    - Purpose: Guarantees 100% operational uptime in resource-constrained, offline, or sandbox
+ *      environments without ever throwing unhandled pipeline rejections.
+ * 
+ * 3. IN-MEMORY LRU CACHE:
+ *    - Cache Key: `${name}::${description}::${semanticConcept}`
+ *    - Pre-warmed asynchronously upon server boot to eliminate runtime inference latency.
+ */
 
 const FALLBACK_DIM = 64;
 const PRETRAINED_DIM = 384;

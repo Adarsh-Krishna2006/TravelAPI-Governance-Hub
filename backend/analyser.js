@@ -215,18 +215,37 @@ export function analyzeBaselinePair(apiA, apiB) {
 }
 
 // --- ENHANCED ANALYSIS ENGINE (With Semantics & Relationships) ---
+/**
+ * Evaluates duplicate likelihood between two API specifications using a 6-signal weighted model.
+ * 
+ * DESIGN RATIONALE - SIX-SIGNAL CALIBRATION:
+ * In travel platforms, different organizations and partners frequently express identical
+ * business workflows using divergent vocabulary (e.g., 'guest' vs 'customer', '/reservations'
+ * vs '/bookings'). Therefore:
+ * - Route Path (20%): Path token overlap, ignoring version prefixes (/v1, /v2).
+ * - HTTP Method (10%): Orthogonal operational check (GET query vs POST mutation).
+ * - Service Category (20%): Functional domain alignment (e.g., Hotel Booking vs Reservation Mgmt).
+ * - Field Names (20%): Normalization across camelCase/snake_case + token matching.
+ * - Semantic Concepts (25%): 3-tier semantic resolution (Exact -> Curated Synonyms -> all-MiniLM-L6-v2 Embeddings).
+ * - Response Structure (5%): Output schema structural overlap.
+ * 
+ * Combined, semantic concepts (25%) and field schemas (20%) contribute 45% of the total score,
+ * enabling robust cross-organization duplicate detection even when route conventions differ.
+ */
 export async function analyzeEnhancedPair(apiA, apiB, settings = {}, options = {}) {
   const weights = settings.weights || { route: 20, method: 10, category: 20, fields: 20, semantics: 25, output: 5 };
   const useEmbeddings = options.useEmbeddings !== false && options.modelVariant !== 'curated';
   const usePretrained = useEmbeddings && (options.modelVariant === 'pretrained' || !options.modelVariant);
 
-  // 1. Route similarity
+  // 1. Route similarity (Token Jaccard with path segment normalization)
   const routeScore = getRouteSimilarity(extractRoute(apiA), extractRoute(apiB), apiA.category, apiB.category);
 
-  // 2. Method similarity
+  // 2. Method similarity (Exact HTTP method matching provides strict operational disambiguation)
   const methodScore = extractMethod(apiA) === extractMethod(apiB) ? 1.0 : 0.0;
 
-  // 3. Category similarity
+  // 3. Category similarity with cross-vertical compatibility mapping
+  // Functionally equivalent travel categories (e.g., 'Reservation Management' <-> 'Hotel Booking')
+  // receive a calibrated partial score (0.7) rather than a complete zero.
   let categoryScore = 0.0;
   if (apiA.category === apiB.category) {
     categoryScore = 1.0;
@@ -243,7 +262,10 @@ export async function analyzeEnhancedPair(apiA, apiB, settings = {}, options = {
     }
   }
 
-  // Cross-vertical domain mismatch flag
+  // Cross-vertical domain mismatch flag:
+  // Orthogonal domains (e.g. Flight Booking vs Hotel Booking) frequently share generic route tokens
+  // such as /bookings or /confirm. When a vertical mismatch is detected, field and semantic scores
+  // are deliberately dampened by 50% and 60% below to strictly suppress cross-domain false positives.
   const isVerticalMismatch =
     ((apiA.category.includes('Flight') && apiB.category.includes('Hotel')) ||
      (apiA.category.includes('Hotel') && apiB.category.includes('Flight')));
@@ -264,9 +286,17 @@ export async function analyzeEnhancedPair(apiA, apiB, settings = {}, options = {
       const conceptA = fA.semanticConcept || CONCEPT_MAP[fA.name] || getSynonymGroup(fA.name);
       const conceptB = fB.semanticConcept || CONCEPT_MAP[fB.name] || getSynonymGroup(fB.name);
 
+      // --- 3-TIER SEMANTIC FIELD MATCHING ---
+      // Tier 1: Exact String Equivalence (case-insensitive)
       const isExact = (fA.name || '').toLowerCase() === (fB.name || '').toLowerCase();
+
+      // Tier 2: Domain Ontology Synonym Mapping (via canonical CONCEPT_MAP or getSynonymGroup)
       const isCurated = !isExact && (conceptA && conceptB && conceptA === conceptB);
 
+      // Tier 3: Pretrained Sentence Vector Embedding (all-MiniLM-L6-v2, 384-dimensional dense vectors)
+      // When options.modelVariant === 'curated', vector embeddings are intentionally bypassed (Model B).
+      // When pretrained model is unavailable, calculateContextualFieldSimilarityAsync gracefully falls back
+      // to the deterministic 64-dimensional semantic-anchor encoder without throwing errors.
       let embResult = { similarity: 0, source: 'fallback' };
       if (usePretrained) {
         embResult = await calculateContextualFieldSimilarityAsync(fA, fB);
@@ -284,6 +314,11 @@ export async function analyzeEnhancedPair(apiA, apiB, settings = {}, options = {
       let rel = 'Different';
       let matchType = 'none';
 
+      // Hierarchical relationship assignment:
+      // - Exact matches always take precedence (100% confidence).
+      // - Curated domain synonyms represent validated semantic equivalence (Strong Equivalent).
+      // - Pretrained cosine similarity >= 0.85 maps to Strong Equivalent; >= 0.70 maps to Contextual Equivalent.
+      // - Token overlap / token-level substring matching serves as a secondary lexical fallback.
       if (isExact) {
         rel = 'Exact Equivalent';
         matchType = 'exact';
@@ -398,18 +433,22 @@ export async function analyzeEnhancedPair(apiA, apiB, settings = {}, options = {
   else if (score >= thresholds.potential) label = 'POTENTIAL DUPLICATE';
   else if (score >= thresholds.overlap) label = 'POSSIBLE OVERLAP';
 
+  // --- EXPLAINABLE EVIDENCE GENERATION (HUMAN-IN-THE-LOOP GOVERNANCE) ---
+  // The system generates transparent, verifiable evidence checkmarks to support human reviewers.
+  // The AI/statistical model produces recommendations and candidate overlap reports only;
+  // all lifecycle actions (consolidation, deprecation, contractual exemption) strictly require human review.
   const evidenceCheckmarks = [];
-  if (categoryScore === 1.0) evidenceCheckmarks.push(`âœ“ Same business category (${apiA.category})`);
-  else if (categoryScore > 0) evidenceCheckmarks.push(`âœ“ Related travel domains (${apiA.category} & ${apiB.category})`);
-  if (methodScore === 1.0) evidenceCheckmarks.push(`âœ“ Same HTTP method (${extractMethod(apiA)})`);
-  if (routeScore > 0.6) evidenceCheckmarks.push(`âœ“ Strong route token similarity (${Math.round(routeScore * 100)}%)`);
-  if (fieldMappings.length > 0) evidenceCheckmarks.push(`âœ“ ${fieldMappings.length} field parameters have strong semantic concept matches`);
-  if (fieldMappings.some(m => m.semanticConceptA === 'currency_code')) evidenceCheckmarks.push(`âœ“ Currency fields are equivalent`);
-  if (fieldMappings.some(m => m.semanticConceptA === 'check_in_date')) evidenceCheckmarks.push(`âœ“ Date fields are equivalent`);
-  if (fieldMappings.some(m => m.semanticConceptA === 'monetary_amount')) evidenceCheckmarks.push(`âœ“ Amount/Price fields are equivalent`);
-  if (fieldMappings.some(m => m.semanticConceptA === 'booking_identifier')) evidenceCheckmarks.push(`âœ“ Booking/Reservation identifiers are equivalent`);
-  if (fieldMappings.some(m => m.semanticConceptA === 'transaction_identifier')) evidenceCheckmarks.push(`âœ“ Payment Transaction identifiers are equivalent`);
-  if (contextualEmbeddingCount > 0) evidenceCheckmarks.push(`âœ“ ${contextualEmbeddingCount} field parameter(s) matched via contextual vector embedding similarity`);
+  if (categoryScore === 1.0) evidenceCheckmarks.push(`✓ Same business category (${apiA.category})`);
+  else if (categoryScore > 0) evidenceCheckmarks.push(`✓ Related travel domains (${apiA.category} & ${apiB.category})`);
+  if (methodScore === 1.0) evidenceCheckmarks.push(`✓ Same HTTP method (${extractMethod(apiA)})`);
+  if (routeScore > 0.6) evidenceCheckmarks.push(`✓ Strong route token similarity (${Math.round(routeScore * 100)}%)`);
+  if (fieldMappings.length > 0) evidenceCheckmarks.push(`✓ ${fieldMappings.length} field parameters have strong semantic concept matches`);
+  if (fieldMappings.some(m => m.semanticConceptA === 'currency_code')) evidenceCheckmarks.push(`✓ Currency fields are equivalent`);
+  if (fieldMappings.some(m => m.semanticConceptA === 'check_in_date')) evidenceCheckmarks.push(`✓ Date fields are equivalent`);
+  if (fieldMappings.some(m => m.semanticConceptA === 'monetary_amount')) evidenceCheckmarks.push(`✓ Amount/Price fields are equivalent`);
+  if (fieldMappings.some(m => m.semanticConceptA === 'booking_identifier')) evidenceCheckmarks.push(`✓ Booking/Reservation identifiers are equivalent`);
+  if (fieldMappings.some(m => m.semanticConceptA === 'transaction_identifier')) evidenceCheckmarks.push(`✓ Payment Transaction identifiers are equivalent`);
+  if (contextualEmbeddingCount > 0) evidenceCheckmarks.push(`✓ ${contextualEmbeddingCount} field parameter(s) matched via contextual vector embedding similarity`);
 
   const avgEmbeddingSimilarity = embeddingSimCount > 0 ? Math.round((totalEmbeddingSim / embeddingSimCount) * 1000) / 1000 : 0;
 

@@ -216,16 +216,23 @@ router.get('/apis', authenticateToken, (req, res) => {
   let list = [...(db.apis || [])];
   const user = req.user;
 
-  // RBAC Organisation Isolation
+  // --- MULTI-ORGANISATION TENANT ISOLATION ARCHITECTURE ---
+  // In a multi-vendor travel aggregator, competing commercial partners (e.g., FlyFast Airlines,
+  // GlobalHotels, StayEasy, PayLink, SecurePay) connect to the central TravelSphere platform.
+  // 
+  // SECURITY REQUIREMENTS:
+  // 1. External Partners MUST NEVER view competitor private APIs, endpoints, or schema designs.
+  // 2. External Partners are quarantined strictly to:
+  //    (a) APIs owned by their own organisation (both Public and Private).
+  //    (b) Public APIs published by the host aggregator (TravelSphere / org-ts).
+  // 3. API Owners are scoped to their own organisation plus public partner APIs.
+  // 4. Admins and Auditors have cross-organisation visibility for governance and compliance.
   if (user.role === 'External Partner') {
-    // External Partner CANNOT see competitor partner APIs (GlobalHotels, StayEasy, PayLink, SecurePay)
-    // Only sees FlyFast APIs (public & private) and TravelSphere public APIs
     list = list.filter(api => 
       api.organisationId === user.organisationId || 
       (api.organisationId === 'org-ts' && api.visibility === 'Public')
     );
   } else if (user.role === 'API Owner') {
-    // API Owner sees all TravelSphere internal APIs and public partner APIs
     list = list.filter(api => 
       api.organisationId === user.organisationId || 
       api.visibility === 'Public'
@@ -997,7 +1004,14 @@ router.post('/experiment/run', authenticateToken, requireRole('Admin'), async (r
       const apiB = enrichedApis[j];
 
       // Ground truth determination with explicit 3-state evaluation:
-      // DUPLICATE, NOT_DUPLICATE, or UNLABELLED
+      // In an API catalogue of 25 APIs, there are 25 * 24 / 2 = 300 total unordered pairwise comparisons.
+      // However, only 8 pairs have verified human annotations (5 true duplicates, 3 negative controls).
+      // The remaining 292 pairs are UNLABELLED.
+      //
+      // METHODOLOGICAL INTEGRITY PRINCIPLE:
+      // Unlabelled pairs MUST NOT be counted as True Negatives in the confusion matrix.
+      // Doing so would drown the evaluation in hundreds of unverified "negatives", artificially
+      // inflating Accuracy and Specificity while masking true false negatives.
       const pairKey1 = `${apiA.id}:${apiB.id}`;
       const pairKey2 = `${apiB.id}:${apiA.id}`;
       const groundTruthEntry = GROUND_TRUTH_PAIRS[pairKey1] || GROUND_TRUTH_PAIRS[pairKey2];
@@ -1066,7 +1080,12 @@ router.post('/experiment/run', authenticateToken, requireRole('Admin'), async (r
 
   const executionTime = Math.max(0.01, Math.round(((Date.now() - startTime) / 1000) * 100) / 100);
 
-  // Calculate Precision, Recall, F1 independently for each model
+  // Calculate Precision, Recall, F1 independently for each of the 3 models.
+  // Formulae:
+  // - Precision = TP / (TP + FP) -> Ratio of true duplicate alerts that are genuine.
+  // - Recall    = TP / (TP + FN) -> Ratio of actual duplicate pairs successfully flagged.
+  // - F1-Score  = 2 * (Precision * Recall) / (Precision + Recall) -> Harmonic mean balancing both.
+  // Edge-case guards (Math.max(1, ...)) prevent division-by-zero errors on empty prediction sets.
   const basePrec = baselineTP / Math.max(1, baselineTP + baselineFP);
   const baseRec = baselineTP / Math.max(1, baselineTP + baselineFN);
   const baseF1 = (basePrec + baseRec > 0) ? (2 * basePrec * baseRec / (basePrec + baseRec)) : 0;

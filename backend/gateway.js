@@ -2,7 +2,15 @@ import * as yaml from 'js-yaml';
 import { CONCEPT_MAP } from './analyser.js';
 
 /**
- * Scrub hardcoded credentials, secret keys, bearer tokens, and IAM role ARNs from gateway specs.
+ * AUTOMATED CREDENTIAL SCRUBBER:
+ * 
+ * SECURITY DESIGN DECISION:
+ * API Gateway configurations (Kong declarative dumps, AWS exports, Apigee bundles) frequently contain
+ * embedded administrative keys, consumer JWT bearer tokens, AWS IAM access keys, or client secrets.
+ * 
+ * To strictly prevent credential leakage into catalog databases, memory dumps, or compliance audit logs,
+ * scrubbing is executed as a PRE-PARSE REGEX PIPELINE across the raw payload string BEFORE the object
+ * is deserialized into JSON or YAML. Any detected secret is replaced with '***REDACTED_CREDENTIAL***'.
  */
 export function scrubCredentials(content) {
   let text = typeof content === 'string' ? content : JSON.stringify(content, null, 2);

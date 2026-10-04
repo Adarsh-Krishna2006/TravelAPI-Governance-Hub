@@ -648,20 +648,18 @@ paths:
   const ordersComp = await analyzeEnhancedPair(tsOrders, seMgmt, db.settings);
   logTest('Detect Semantic Duplicate: Travel Orders vs Reservation Management with score >= 60%', ordersComp.score >= 60, `Score: ${ordersComp.score}%`);
 
-  // 5.4: Baseline vs Enhanced comparison execution
+  // 5.4: Baseline vs Enhanced comparison execution & Truthful Pretrained Embedding Source Flag
   const resExp = await fetch(`${baseUrl}/experiment/run`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${adminToken}` }
   });
   const expData = await resExp.json();
-  logTest('Run Baseline vs Enhanced Experiment dynamically without hardcoded values', expData.comparisonCount === 300 && expData.f1 > 0, `Enhanced F1: ${expData.f1}%, Comparisons: ${expData.comparisonCount}`);
+  const validExp = expData.comparisonCount === 300 && expData.f1 > 0 && typeof expData.modelC_usedPretrained === 'boolean' && ['pretrained', 'fallback'].includes(expData.embeddingSource);
+  logTest('Run Baseline vs Enhanced Experiment dynamically with truthful model execution', validExp, `Enhanced F1: ${expData.f1}%, Comparisons: ${expData.comparisonCount}, Engine: ${expData.embeddingEngine}`);
 
   // 5.5: 3-State Ground Truth Verification
   const valid3State = expData.labelledPairCount === 8 && expData.unlabelledPairCount === 292 && expData.trueNegatives === 3;
   logTest('Ground Truth 3-State Overhaul: Unlabelled pairs must NOT become True Negatives', valid3State, `Labelled: ${expData.labelledPairCount}, Unlabelled: ${expData.unlabelledPairCount}, TN: ${expData.trueNegatives}`);
-
-  // 5.6: Pretrained Embedding Execution & Summary Flag
-  logTest('Model C exposes truthful embedding source summary flag', typeof expData.modelC_usedPretrained === 'boolean' && ['pretrained', 'fallback'].includes(expData.embeddingSource), `modelC_usedPretrained=${expData.modelC_usedPretrained}, embeddingSource=${expData.embeddingSource}`);
 
   // ----------------------------------------------------
   // SUITE 6: ENDPOINT-LEVEL DUPLICATE SURFACE & METRICS
