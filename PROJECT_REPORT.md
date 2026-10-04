@@ -287,6 +287,9 @@ The remaining 292 pairs scanned during full analysis across the 25 catalogued AP
 | **Enhanced (Curated Synonyms)** | 6-Signal composite model with curated travel ontology | **100.0%** | **80.0%** | **88.9%** | ~0.04s |
 | **Enhanced (Pretrained Embeddings)** | 6-Signal model layered with all-MiniLM-L6-v2 sentence embeddings | **100.0%** | **80.0%** | **88.9%** | ~0.08s |
 
+> **Benchmark Prototype Caveat & Evaluation Context**:  
+> Because the labelled benchmark ground truth contains 8 human-annotated pairs (5 confirmed duplicate pairs and 3 negative controls) alongside 292 unlabelled pairs, these metrics represent empirical evaluation on our prototype benchmark suite rather than a statistical claim of universal production accuracy. They validate that both the curated ontology and in-process MiniLM sentence embeddings capture semantic duplicates that escape exact keyword matching, without producing false positives.
+
 ---
 
 ## 6. Edge-Case Tests & Adversarial Verification

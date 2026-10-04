@@ -48,6 +48,21 @@ The Duplication Analyser computes weighted score signals (0–100) between any t
   3. *Tier 3: In-Process Contextual Pretrained Sentence Embeddings*: 384-dimensional dense sentence embeddings generated in-process via `@xenova/transformers` (`Xenova/all-MiniLM-L6-v2`) with local deterministic 64-dimensional anchor fallback, evaluated via L2 unit-normalised cosine similarity ($\ge 0.70$ for Contextual Equivalent, $\ge 0.85$ for Strong Equivalent).
 * **Response Structure (5%)**: Evaluates schema property overlap in returned HTTP responses.
 
+### Pretrained Sentence Embeddings Architecture (384D all-MiniLM-L6-v2 vs 64D Fallback)
+The contextual semantic vector embedding engine (`backend/embeddings.js`) implements a two-engine architecture:
+* **Primary Pretrained Model**: `Xenova/all-MiniLM-L6-v2` loaded in-process via `@xenova/transformers`.
+  - **Vector Dimension**: Exactly **384 dimensions**.
+  - **In-Process Inference**: Runs locally via ONNX Runtime without external Python processes or paid external APIs (eliminating API costs and third-party data leakage).
+  - **Pre-warming & Caching**: Pre-warms the in-memory LRU cache upon boot across all catalogued schema fields (`${name}::${description}::${concept}`) for sub-millisecond lookups.
+* **Deterministic Fallback Encoder (Resilience Mode)**:
+  - **Vector Dimension**: Exactly **64 dimensions**.
+  - **Architecture**: 11 travel-domain semantic anchor projections combined with character tri-gram hash buckets.
+  - **Role**: Operates strictly as an offline/memory-constrained fallback if `@xenova/transformers` cannot initialize, ensuring 100% operational uptime without throwing unhandled exceptions.
+  - **Truthful Engine Flagging**: The API response explicitly tags whether calculations used `'pretrained'` or `'fallback'`, and never mislabels fallback vectors as MiniLM.
+* **Human-in-the-Loop Governance Boundary**:
+  - MiniLM embeddings produce continuous similarity evidence (cosine similarity $\ge 0.70$ / $0.85$) for human review.
+  - Pretrained embeddings **never** make autonomous governance decisions or deprecate endpoints automatically.
+
 ### Risk Threshold Labels
 * **85–100**: `HIGH PRIORITY DUPLICATE` (Immediate candidate for consolidation review)
 * **65–84**: `POTENTIAL DUPLICATE` (Candidate for domain review and mapping)
@@ -241,11 +256,12 @@ The test suite exercises both **valid operations** (positive cases) and **advers
 7. **Live HTTP Integration Test Evidence (Suite 7 - 1 assertion / 11 scenarios)**:
    - Executes `POST /api/tests/run`, dispatching real local HTTP requests across 11 end-to-end integration scenarios verifying authentication, RBAC, tenant isolation, strict OpenAPI validation, and adversarial recovery with a 100% pass rate.
 8. **Contextual Semantic Embeddings (Suite 8 - 5 assertions)**:
+   - Pretrained Sentence Embeddings: Evaluates in-process 384-dimensional dense sentence embeddings using `Xenova/all-MiniLM-L6-v2` via `@xenova/transformers`, with zero external API calls.
+   - Deterministic Fallback Resilience: Includes a 64-dimensional semantic-anchor + character-trigram hashing fallback encoder strictly used when `@xenova/transformers` cannot load.
    - Semantic Similarity: Calculate high cosine similarity for domain synonyms (`customer_id` $\leftrightarrow$ `guest_id` at 92.6%).
    - Identifier Similarity: Strong similarity for booking identifiers (`bookingId` $\leftrightarrow$ `reservation_id` at 85.8%).
    - Orthogonal Segregation: Segregate cross-domain fields with low cosine similarity (`flightNumber` vs `hotelId` at 34.4%).
-   - Caching: Verify in-memory LRU embedding cache returns cached vectors on subsequent lookups.
-   - Robustness: Graceful fallback for empty, null, or undefined field inputs without crashing (returns similarity 0).
+   - Caching & Fallback: In-memory LRU embedding cache returns cached vectors on subsequent lookups; graceful fallback for empty, null, or undefined field inputs without crashing (returns similarity 0).
 9. **Database Repository Abstraction (Suite 9 - 4 assertions)**:
    - Architecture: Factory instantiates `JsonRepository` by default when `DATABASE_URL` is unset.
    - Contract Conformance: Repository conforms to `IRepository` interface contract methods.
@@ -318,6 +334,9 @@ $$\text{Precision} = \frac{\text{TP}}{\text{TP} + \text{FP}}, \quad \text{Recall
 | **Model C: Enhanced (Pretrained Embeddings)** | all-MiniLM-L6-v2 (384D) + Ontology | 4 | 0 | 1 | 3 | **100.0%** | **80.0%** | **88.9%** | ~0.20s |
 
 *Both enhanced models correctly resolve the semantic duplicate pair (`Travel Orders` $\leftrightarrow$ `Reservation Management`), raising recall from 60.0% to 80.0% and F1 from 75.0% to 88.9% with 0 false positives.*
+
+> **Benchmark Prototype Caveat & Evaluation Context**:  
+> Because the labelled benchmark ground truth contains 8 human-annotated pairs (5 confirmed duplicate pairs and 3 negative controls) alongside 292 unlabelled pairs, these metrics represent empirical evaluation on our prototype benchmark suite rather than a statistical claim of universal production accuracy. They validate that both the curated ontology and in-process MiniLM sentence embeddings capture semantic duplicates that escape exact keyword matching, without producing false positives.
 
 ---
 
